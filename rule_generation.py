@@ -38,35 +38,25 @@ class AzureLLMService:
         return json.loads(response.choices[0].message.content)
 
 # ==========================================================
-# ---------------- BASE TOOL -------------------------------
-# ==========================================================
-
-class BaseTool:
-    def execute(self, *args, **kwargs):
-        raise NotImplementedError
-
-# ==========================================================
 # ---------------- PDF PARSER TOOL -------------------------
 # ==========================================================
 
-class ParsePDFTool(BaseTool):
+class ParsePDFTool:
 
     def execute(self, file_path: str) -> str:
         print("Parsing PDF...")
 
         loader = DoclingLoader(file_path)
 
-        with contextlib.redirect_stderr(open(os.devnull, "w")):
-            documents = loader.load()
+        documents = loader.load()
 
-        return "\n\n".join(doc.page_content for doc in documents)
-
+        return "".join(doc.page_content for doc in documents)
 
 # ==========================================================
 # ---------------- POLICY COMPILATION TOOL -----------------
 # ==========================================================
 
-class PolicyCompilationTool(BaseTool):
+class PolicyCompilationTool:
 
     def __init__(self, llm: AzureLLMService):
         self.llm = llm
@@ -196,7 +186,7 @@ class RuleRepository:
 # ---------------- AGENT ORCHESTRATOR ----------------------
 # ==========================================================
 
-class ContractComplianceAgent:
+class RuleGenerationAgent:
 
     def __init__(self):
         self.llm = AzureLLMService()
@@ -229,7 +219,7 @@ class ContractComplianceAgent:
 # ==========================================================
 
 def generate_rules_from_pdf(pdf_path: str):
-    agent = ContractComplianceAgent()
+    agent = RuleGenerationAgent()
     return agent.process_contract(pdf_path)
 
 generate_rules_from_pdf("contract.pdf")

@@ -34,8 +34,7 @@ JOIN_PATTERN = re.compile(
     re.IGNORECASE
 )
 
-# ONLY internal paths are filtered out
-INTERNAL_PATH_PREFIXES = [
+INTERNAL_PATHS = [
     "./",
     "/tmp/",
     "/var/",
@@ -43,7 +42,6 @@ INTERNAL_PATH_PREFIXES = [
     "logs/",
     "internal/"
 ]
-
 
 # ==========================================================
 # HELPER FUNCTION
@@ -54,8 +52,7 @@ def is_internal_path(path: str) -> bool:
         return False
 
     path = path.lower()
-    return any(path.startswith(prefix) for prefix in INTERNAL_PATH_PREFIXES)
-
+    return any(path.startswith(prefix) for prefix in INTERNAL_PATHS)
 
 # ==========================================================
 # DATABASE RULE REPOSITORY
@@ -78,7 +75,6 @@ class RuleRepository:
             rows = cursor.fetchall()
         return [row[0] for row in rows]
 
-
 # ==========================================================
 # LLM SERVICE
 # ==========================================================
@@ -96,7 +92,7 @@ class AzureLLMService:
     def evaluate_block(self, code_block: str, rules: List[Dict]) -> Dict:
 
         system_prompt = """
-        You are an enterprise compliance engine.
+        You are an enterprise contract compliance engine.
 
         You will receive:
         1. A Python code block.
@@ -308,8 +304,6 @@ def analyze_single_file(file_path: str, metadata: Dict):
 
     llm = AzureLLMService()
 
-    print("\nCompliance Evaluation Results:\n")
-
     for block in scanner.blocks_for_review:
         
         result = llm.evaluate_block(block["code"], rules)
@@ -317,7 +311,6 @@ def analyze_single_file(file_path: str, metadata: Dict):
 
         if violations:
             violation_count += 1
-            print("--------------------------------------------------")
             print(f"Scope: {block['scope']}")
             print(f"Name: {block['name']}")
             print(f"Initial Reason: {block['reason']}")
@@ -328,12 +321,12 @@ def analyze_single_file(file_path: str, metadata: Dict):
         else:
             continue
 
-        print("--------------------------------------------------\n")
     if violation_count == 0:
         print("No Violations Detected")
         print("Safe to execute the file\n\n")
 
 def analyze_multiple_files(files_list: List, metadata: Dict):
+    print("\n\nCompliance Evaluation Results:\n")
     for file_name in files_list:
         print("-"*50)
         print(file_name)
