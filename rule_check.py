@@ -337,10 +337,16 @@ def analyze_multiple_files(files_list: List, metadata: Dict):
 # ==========================================================
 
 
-metadata = {
-    "patients": ["patient_id", "ssn", "dob"],
-    "healthcare_providers": ["provider_id", "npi"]
-}
+if __name__ == "__main__":
 
-file_list = ['test_scripts/test_script_breach.py','test_scripts/test_script_safe.py']
-analyze_multiple_files(file_list ,metadata)
+    metadata = {
+        "patients": ["patient_id", "ssn", "dob"],
+        "healthcare_providers": ["provider_id", "npi"]
+    }
+
+    file_list = [
+        'test_scripts/test_script_breach.py',
+        'test_scripts/test_script_safe.py'
+    ]
+
+    analyze_multiple_files(file_list, metadata)

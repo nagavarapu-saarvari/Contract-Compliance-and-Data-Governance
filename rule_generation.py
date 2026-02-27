@@ -146,7 +146,7 @@ class RuleRepository:
             """)
             self.conn.commit()
 
-    def store(self, rules: List[Dict]) -> Dict[str, int]:
+    def store(self, rules: List[Dict]) -> int:
 
         inserted_rows = 0
 
@@ -174,7 +174,7 @@ class RuleRepository:
                     VALUES (%s, %s);
                 """, (rule_id, json.dumps(rule)))
 
-                print(f"Rule {rule_id} inserted_rows.")
+                print(f"Rule {rule_id} inserted.")
                 inserted_rows += 1
 
             self.conn.commit()
@@ -207,7 +207,7 @@ class RuleGenerationAgent:
         print("\nDatabase Summary:")
 
         if inserted_rows == 0:
-            print("No new rules were inserted_rows.")
+            print("No new rules were inserted.")
         else:
             print(f"Number of rows inserted: {inserted_rows}")
 
@@ -222,4 +222,5 @@ def generate_rules_from_pdf(pdf_path: str):
     agent = RuleGenerationAgent()
     return agent.process_contract(pdf_path)
 
-generate_rules_from_pdf("contract.pdf")
+if __name__ == "__main__":
+    generate_rules_from_pdf("contract.pdf")
