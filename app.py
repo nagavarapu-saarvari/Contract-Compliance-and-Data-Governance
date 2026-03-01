@@ -121,7 +121,6 @@ async def process_pdf(file: UploadFile = File(...)):
 # ==========================================================
 
 @app.post("/api/check-compliance")
-@app.post("/api/check-compliance")
 async def check_compliance(file: UploadFile = File(...)):
     """
     Upload a Python file and check it against stored rules.

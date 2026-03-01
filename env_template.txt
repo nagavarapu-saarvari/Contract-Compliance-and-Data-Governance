@@ -3,8 +3,8 @@ AZURE_OPENAI_ENDPOINT= your_api_endpoint
 AZURE_OPENAI_API_VERSION= your_api_version
 AZURE_OPENAI_DEPLOYMENT= openai_model
 
-DB_HOST=localhost
+DB_HOST=db
 DB_PORT=5432
 DB_NAME=contract_compliance
-DB_USER=postgres
-DB_PASSWORD=your_password
+DB_USER=compliance_user
+DB_PASSWORD=compliance_password
