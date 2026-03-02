@@ -1,52 +1,35 @@
-import React, { useState } from 'react';
-import './App.css';
-import PdfUpload from './components/PdfUpload';
-import PythonCheck from './components/PythonCheck';
-import RulesView from './components/RulesView';
+import React from "react";
+import {BrowserRouter as Router,Routes,Route} from "react-router-dom";
 
-function App() {
-  const [activeTab, setActiveTab] = useState('pdf');
+import Navbar from "./components/Navbar";
+import RuleGeneration from "./pages/RuleGeneration";
+import RuleCheck from "./pages/RuleCheck";
 
-  return (
-    <div className="App">
-      <header className="header">
-        <div className="header-content">
-          <h1>📋 Contract Compliance & Data Governance</h1>
-          <p className="subtitle">Upload PDFs to generate rules or Python files to check compliance</p>
-        </div>
-      </header>
+import "./App.css";
 
-      <main className="main-content">
-        <div className="container">
-          <div className="tabs">
-            <button
-              className={`tab-button ${activeTab === 'pdf' ? 'active' : ''}`}
-              onClick={() => setActiveTab('pdf')}
-            >
-              📄 Generate Rules (PDF)
-            </button>
-            <button
-              className={`tab-button ${activeTab === 'python' ? 'active' : ''}`}
-              onClick={() => setActiveTab('python')}
-            >
-              Check Compliance (Python)
-            </button>
-           
-          </div>
+function App(){
 
-          <div className="tab-content">
-            {activeTab === 'pdf' && <PdfUpload />}
-            {activeTab === 'python' && <PythonCheck />}
-            {activeTab === 'rules' && <RulesView />}
-          </div>
-        </div>
-      </main>
+return(
 
-      <footer className="footer">
-        <p>&copy; 2026 Contract Compliance & Data Governance System</p>
-      </footer>
-    </div>
-  );
+<Router>
+
+<Navbar/>
+
+<div className="container">
+
+<Routes>
+
+<Route path="/" element={<RuleGeneration/>}/>
+<Route path="/rule-check" element={<RuleCheck/>}/>
+
+</Routes>
+
+</div>
+
+</Router>
+
+)
+
 }
 
-export default App;
+export default App
