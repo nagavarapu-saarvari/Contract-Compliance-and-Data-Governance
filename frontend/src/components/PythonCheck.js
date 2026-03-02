@@ -86,7 +86,7 @@ function PythonCheck() {
 
   return (
     <div className="card">
-      <h2>🐍 Check Python File for Compliance</h2>
+      <h2> Check Python File for Compliance</h2>
       <p>Upload a Python file to check it against stored governance rules</p>
 
       <div
@@ -97,7 +97,6 @@ function PythonCheck() {
         onDrop={handleDrop}
         onClick={() => fileInputRef.current?.click()}
       >
-        <div className="upload-icon">🐍</div>
         <p>Drag and drop your Python file here</p>
         <p className="or-text">or</p>
         <button className="btn btn-primary">Select Python File</button>

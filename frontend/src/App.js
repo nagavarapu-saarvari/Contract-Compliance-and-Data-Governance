@@ -29,7 +29,7 @@ function App() {
               className={`tab-button ${activeTab === 'python' ? 'active' : ''}`}
               onClick={() => setActiveTab('python')}
             >
-              🐍 Check Compliance (Python)
+              Check Compliance (Python)
             </button>
            
           </div>

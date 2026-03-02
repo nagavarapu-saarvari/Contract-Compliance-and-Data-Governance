@@ -1,12 +1,9 @@
 import os
-import json
-import tempfile
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pathlib import Path
-from typing import Dict, List
 
 # Import the rule generation and checking modules
 from rule_generation import RuleGenerationAgent

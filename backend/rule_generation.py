@@ -68,6 +68,8 @@ class PolicyCompilationTool:
         system_prompt = """
             You are a senior enterprise governance and compliance expert.
             Convert enforceable obligations into structured rules.
+            The rules should be understood by both high level management and LLMs.
+            You can keep the description such that it should summarize the rule properly.
             Output STRICT JSON only.
             """
 
@@ -222,5 +224,4 @@ def generate_rules_from_pdf(pdf_path: str):
     agent = RuleGenerationAgent()
     return agent.process_contract(pdf_path)
 
-if __name__ == "__main__":
-    generate_rules_from_pdf("contract.pdf")
+# generate_rules_from_pdf("contract.pdf")

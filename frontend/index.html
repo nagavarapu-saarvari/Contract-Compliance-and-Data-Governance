@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+
+<title>Contract Compliance</title>
+
+<style>
+
+body{
+font-family: Arial;
+background:#f5f5f5;
+}
+
+.container{
+width:700px;
+margin:80px auto;
+background:white;
+padding:30px;
+border-radius:10px;
+box-shadow:0 2px 10px rgba(0,0,0,0.1);
+text-align:center;
+}
+
+button{
+padding:10px 20px;
+background:#007bff;
+color:white;
+border:none;
+border-radius:5px;
+cursor:pointer;
+margin-top:10px;
+}
+
+table{
+width:100%;
+border-collapse:collapse;
+margin-top:20px;
+}
+
+th{
+background:#eee;
+}
+
+td,th{
+padding:8px;
+}
+
+</style>
+
+</head>
+
+<body>
+
+<div class="container">
+
+<h2>Contract Compliance Engine</h2>
+
+<p>Upload a contract PDF or Python file</p>
+
+<input type="file" id="fileInput">
+
+<br>
+
+<button onclick="uploadFile()">Upload</button>
+
+<div id="output"></div>
+
+</div>
+
+<script src="/static/script.js"></script>
+
+</body>
+
+</html>
