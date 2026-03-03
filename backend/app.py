@@ -1,17 +1,28 @@
 import os
+import io
+import json
+import tempfile
+import psycopg2
+
+from pathlib import Path
 from fastapi import FastAPI, UploadFile, File, HTTPException
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
-from pathlib import Path
 
-# Import the rule generation and checking modules
-from rule_generation import RuleGenerationAgent
-from rule_check import  RuleRepository as CheckRuleRepository
+from dotenv import load_dotenv
 
-app = FastAPI(title="Contract Compliance & Data Governance")
+from rule_generation import generate_rules_from_pdf
+from rule_check import analyze_single_file
 
-# Enable CORS
+load_dotenv()
+
+# ==========================================================
+# FASTAPI INIT
+# ==========================================================
+
+app = FastAPI(title="Governance Rule Engine")
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -20,243 +31,302 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Create directories if they don't exist
-UPLOAD_DIR = Path("uploads")
-UPLOAD_DIR.mkdir(exist_ok=True)
+# ==========================================================
+# DATABASE CONNECTION
+# ==========================================================
 
-# Serve React build files
-react_build_dir = Path("frontend/build")
-if react_build_dir.exists():
-    app.mount("/static", StaticFiles(directory=str(react_build_dir / "static")), name="static")
+def get_connection():
+    return psycopg2.connect(
+        host=os.getenv("DB_HOST"),
+        port=os.getenv("DB_PORT"),
+        dbname=os.getenv("DB_NAME"),
+        user=os.getenv("DB_USER"),
+        password=os.getenv("DB_PASSWORD")
+    )
 
 
 # ==========================================================
-# ROOT ENDPOINT
+# DATABASE TABLE INITIALIZATION
 # ==========================================================
 
-@app.get("/")
-async def root():
-    """Serve the React app"""
-    index_path = Path("frontend/build/index.html")
-    if index_path.exists():
-        return FileResponse(index_path, media_type="text/html")
-    return {"message": "Contract Compliance System - React app not built yet. Run 'npm run build' in frontend folder."}
+def initialize_tables():
+
+    conn = get_connection()
+
+    with conn.cursor() as cursor:
+
+        # Documents table
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS documents (
+            id SERIAL PRIMARY KEY,
+            filename TEXT,
+            file_data BYTEA,
+            uploaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        """)
+
+        # Rules table linked to documents
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS rules (
+            id SERIAL PRIMARY KEY,
+            document_id INTEGER REFERENCES documents(id) ON DELETE CASCADE,
+            rule_id TEXT,
+            rule_json JSONB,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        """)
+
+        conn.commit()
+
+    conn.close()
 
 
-@app.get("/{full_path:path}")
-async def serve_react_app(full_path: str):
-    """Serve React app for all routes"""
-    index_path = Path("frontend/build/index.html")
-    
-    # Check if the requested path is a static file
-    static_path = Path("frontend/build/static") / full_path
-    if static_path.exists() and static_path.is_file():
-        return FileResponse(static_path)
-    
-    # Otherwise serve index.html for React routing
-    if index_path.exists():
-        return FileResponse(index_path, media_type="text/html")
-    
-    return {"message": "Not Found"}
-
-
-
-# ==========================================================
-# PDF PROCESSING ENDPOINT
-# ==========================================================
-
-@app.post("/api/process-pdf")
-async def process_pdf(file: UploadFile = File(...)):
-    """
-    Upload a PDF file and generate rules from it using rule_generation.py
-    """
-    try:
-        # Validate file type
-        if not file.filename.lower().endswith(".pdf"):
-            raise HTTPException(status_code=400, detail="Only PDF files are supported")
-
-        # Save the uploaded file
-        temp_path = UPLOAD_DIR / file.filename
-        with open(temp_path, "wb") as f:
-            contents = await file.read()
-            f.write(contents)
-
-        # Process the PDF using rule generation
-        agent = RuleGenerationAgent()
-        rules = agent.process_contract(str(temp_path))
-
-        # Clean up the temporary file
-        if temp_path.exists():
-            os.remove(temp_path)
-
-        return JSONResponse(
-            status_code=200,
-            content={
-                "status": "success",
-                "message": "PDF processed successfully",
-                "rules_count": len(rules),
-                "rules": rules
-            }
-        )
-
-    except Exception as e:
-        # Clean up temp file on error
-        if temp_path.exists():
-            os.remove(temp_path)
-        
-        return JSONResponse(
-            status_code=500,
-            content={
-                "status": "error",
-                "message": f"Error processing PDF: {str(e)}"
-            }
-        )
-
+initialize_tables()
 
 # ==========================================================
-# PYTHON FILE COMPLIANCE CHECK ENDPOINT
+# PDF UPLOAD
 # ==========================================================
 
-@app.post("/api/check-compliance")
-async def check_compliance(file: UploadFile = File(...)):
-    """
-    Upload a Python file and check it against stored rules.
-    Only returns:
-        - violation_found
-        - safe
-    """
-    try:
-        if not file.filename.lower().endswith(".py"):
-            raise HTTPException(status_code=400, detail="Only Python files are supported")
+@app.post("/upload_file")
+async def upload_file(file: UploadFile = File(...)):
 
-        temp_path = UPLOAD_DIR / file.filename
-        with open(temp_path, "wb") as f:
-            contents = await file.read()
-            f.write(contents)
+    filename = file.filename.lower()
+
+    # ======================================================
+    # PDF FILE
+    # ======================================================
+
+    if filename.endswith(".pdf"):
+
+        file_bytes = await file.read()
+
+        conn = get_connection()
+
+        with conn.cursor() as cursor:
+
+            cursor.execute(
+                """
+                INSERT INTO documents (filename, file_data)
+                VALUES (%s, %s)
+                RETURNING id;
+                """,
+                (file.filename, psycopg2.Binary(file_bytes))
+            )
+
+            document_id = cursor.fetchone()[0]
+
+            conn.commit()
+
+        conn.close()
+
+        return {
+            "type": "pdf",
+            "message": "PDF uploaded successfully",
+            "document_id": document_id
+        }
+
+    # ======================================================
+    # PYTHON FILE
+    # ======================================================
+
+    elif filename.endswith(".py"):
+
+        code = await file.read()
+
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".py") as temp_file:
+
+            temp_file.write(code)
+            temp_file_path = temp_file.name
 
         metadata = {
             "patients": ["patient_id", "ssn", "dob"],
-            "healthcare_providers": ["provider_id", "npi"],
-            "employees": ["employee_id", "ssn", "salary"],
-            "customers": ["customer_id", "credit_card"],
-            "users": ["user_id", "password", "email"]
+            "healthcare_providers": ["provider_id", "npi"]
         }
 
-        import ast
-        from rule_check import ComplianceScanner, AzureLLMService
+        try:
 
-        with open(temp_path, "r", encoding="utf-8") as f:
-            code = f.read()
+            analyze_single_file(temp_file_path, metadata)
 
-        tree = ast.parse(code)
-        scanner = ComplianceScanner(code, metadata)
-        scanner.visit(tree)
+        finally:
 
-        violations_found = []
+            os.remove(temp_file_path)
 
-        # Only evaluate blocks if scanner flagged anything
-        if scanner.blocks_for_review:
-            rule_repo = CheckRuleRepository()
-            rules = rule_repo.fetch_all_rules()
-            llm = AzureLLMService()
+        return {
+            "type": "python",
+            "message": "Compliance analysis completed"
+        }
 
-            for block in scanner.blocks_for_review:
-                result = llm.evaluate_block(block["code"], rules)
-                violations = result.get("violations", [])
+    # ======================================================
+    # INVALID FILE
+    # ======================================================
 
-                if violations:
-                    violations_found.append({
-                        "block_scope": block["scope"],
-                        "block_name": block["name"],
-                        "violations": violations
-                    })
+    else:
 
-        if temp_path.exists():
-            os.remove(temp_path)
-
-        # FINAL STATUS (Only 2 States)
-        if violations_found:
-            return JSONResponse(
-                status_code=200,
-                content={
-                    "status": "success",
-                    "compliance_status": "violation_found",
-                    "violations_count": len(violations_found),
-                    "violations": violations_found
-                }
-            )
-        else:
-            return JSONResponse(
-                status_code=200,
-                content={
-                    "status": "success",
-                    "compliance_status": "safe",
-                    "violations_count": 0,
-                    "violations": []
-                }
-            )
-
-    except Exception as e:
-        if 'temp_path' in locals() and temp_path.exists():
-            os.remove(temp_path)
-
-        return JSONResponse(
-            status_code=500,
-            content={
-                "status": "error",
-                "message": f"Error checking compliance: {str(e)}"
-            }
-        )
-
-# ==========================================================
-# RULES RETRIEVAL ENDPOINT
-# ==========================================================
-
-@app.get("/api/rules")
-async def get_rules():
-    """
-    Retrieve all stored rules from the database
-    """
-    try:
-        rule_repo = CheckRuleRepository()
-        rules = rule_repo.fetch_all_rules()
-        
-        return JSONResponse(
-            status_code=200,
-            content={
-                "status": "success",
-                "rules_count": len(rules),
-                "rules": rules
-            }
-        )
-    except Exception as e:
-        return JSONResponse(
-            status_code=500,
-            content={
-                "status": "error",
-                "message": f"Error retrieving rules: {str(e)}"
-            }
+        raise HTTPException(
+            status_code=400,
+            detail="Only PDF and .py files are supported"
         )
 
 
 # ==========================================================
-# HEALTH CHECK ENDPOINT
+# LIST DOCUMENTS
 # ==========================================================
 
-@app.get("/api/health")
-async def health_check():
-    """
-    Health check endpoint
-    """
-    return JSONResponse(
-        status_code=200,
-        content={
-            "status": "healthy",
-            "message": "Contract Compliance System is running"
+@app.get("/documents")
+def list_documents():
+
+    conn = get_connection()
+
+    with conn.cursor() as cursor:
+
+        cursor.execute("""
+        SELECT id, filename, uploaded_at
+        FROM documents
+        ORDER BY uploaded_at DESC
+        """)
+
+        rows = cursor.fetchall()
+
+    conn.close()
+
+    documents = []
+
+    for r in rows:
+        documents.append({
+            "id": r[0],
+            "filename": r[1],
+            "uploaded_at": r[2]
+        })
+
+    return documents
+
+
+# ==========================================================
+# DOWNLOAD DOCUMENT
+# ==========================================================
+
+@app.get("/document/{doc_id}")
+def get_document(doc_id: int):
+
+    conn = get_connection()
+
+    with conn.cursor() as cursor:
+
+        cursor.execute(
+            "SELECT filename, file_data FROM documents WHERE id=%s",
+            (doc_id,)
+        )
+
+        row = cursor.fetchone()
+
+    conn.close()
+
+    if not row:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    filename, file_data = row
+
+    return StreamingResponse(
+        io.BytesIO(file_data),
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f"attachment; filename={filename}"
         }
     )
 
 
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8001)
+# ==========================================================
+# RULE GENERATION
+# ==========================================================
+
+@app.post("/generate_rules/{doc_id}")
+def generate_rules(doc_id: int):
+
+    def stream():
+
+        
+
+        conn = get_connection()
+
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT filename, file_data FROM documents WHERE id=%s",
+                (doc_id,)
+            )
+            row = cursor.fetchone()
+
+        conn.close()
+
+        if not row:
+            yield "Document not found\n"
+            return
+        yield "Parsing PDF...\n"
+
+        filename, file_data = row
+
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp_pdf:
+            temp_pdf.write(file_data)
+            temp_pdf_path = temp_pdf.name
+
+        yield "Generating governance rules...\n"
+
+        rules = generate_rules_from_pdf(temp_pdf_path, doc_id)
+
+        os.remove(temp_pdf_path)
+
+        yield json.dumps({
+            "type": "rules",
+            "rules": rules
+        }) + "\n"
+
+    return StreamingResponse(stream(), media_type="text/plain")
+
+
+# ==========================================================
+# PYTHON FILE UPLOAD FOR COMPLIANCE CHECK
+# ==========================================================
+
+@app.post("/check_compliance")
+async def check_compliance(file: UploadFile = File(...)):
+
+    if not file.filename.lower().endswith(".py"):
+        raise HTTPException(status_code=400, detail="Only Python files allowed")
+
+    code = await file.read()
+
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".py") as temp_file:
+
+        temp_file.write(code)
+        temp_file_path = temp_file.name
+
+    metadata = {
+        "patients": ["patient_id", "ssn", "dob"],
+        "healthcare_providers": ["provider_id", "npi"]
+    }
+
+    try:
+
+        analyze_single_file(temp_file_path, metadata)
+
+    finally:
+
+        os.remove(temp_file_path)
+
+    return {
+        "message": "Compliance analysis completed"
+    }
+
+
+# ==========================================================
+# SERVE FRONTEND (React BUILD)
+# ==========================================================
+
+frontend_path = Path("frontend/build")
+
+if frontend_path.exists():
+
+    app.mount(
+        "/",
+        StaticFiles(directory=frontend_path, html=True),
+        name="frontend"
+    )

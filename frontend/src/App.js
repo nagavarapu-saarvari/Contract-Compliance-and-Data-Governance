@@ -1,35 +1,60 @@
-import React from "react";
-import {BrowserRouter as Router,Routes,Route} from "react-router-dom";
+import React, { useEffect, useState } from "react";
 
-import Navbar from "./components/Navbar";
-import RuleGeneration from "./pages/RuleGeneration";
-import RuleCheck from "./pages/RuleCheck";
+import ModelSelector from "./components/ModelSelector";
+import FileUpload from "./components/FileUpload";
+import DocumentList from "./components/DocumentList";
+import PromptPanel from "./components/PromptPanel";
 
-import "./App.css";
+import { getDocuments } from "./services/api";
 
-function App(){
+function App() {
 
-return(
+  const [documents, setDocuments] = useState([]);
+  const [selectedDoc, setSelectedDoc] = useState(null);
 
-<Router>
+  const loadDocuments = async () => {
+    const res = await getDocuments();
+    setDocuments(res.data);
+  };
 
-<Navbar/>
+  useEffect(() => {
+    loadDocuments();
+  }, []);
 
-<div className="container">
+  return (
+    <div className="container">
 
-<Routes>
+      {/* LOGO SECTION */}
+      <div className="top-bar">
+        <img
+          src="/logo.png"
+          alt="Logo"
+          className="logo"
+        />
+      </div>
 
-<Route path="/" element={<RuleGeneration/>}/>
-<Route path="/rule-check" element={<RuleCheck/>}/>
+      <div className="layout">
 
-</Routes>
+        <div className="sidebar">
 
-</div>
+          <ModelSelector />
 
-</Router>
+          <FileUpload refreshDocs={loadDocuments} />
 
-)
+          <DocumentList
+            documents={documents}
+            selectedDoc={selectedDoc}
+            setSelectedDoc={setSelectedDoc}
+          />
 
+        </div>
+
+        <PromptPanel selectedDoc={selectedDoc} />
+
+      </div>
+
+    </div>
+  );
 }
 
-export default App
+export default App;
