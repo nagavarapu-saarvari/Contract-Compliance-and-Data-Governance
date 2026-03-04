@@ -1,21 +1,26 @@
-# ---------- Stage 1: Build React ----------
-FROM node:18 && python:3.11
+# ---------- Base Image (Python) ----------
+FROM python:3.11-slim AS base
 
+# Install system dependencies (node + pipenv + others) and Node.js in one layer
+RUN apt-get update && apt-get install -y \
+    curl \
+    && rm -rf /var/lib/apt/lists/* \
+    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && apt-get install -y nodejs \
+    && npm install -g npm@latest
+
+# Set working directory
 WORKDIR /app
+
+# Copy dependency files and install all dependencies in one layer
 COPY . .
-RUN cd frontend && npm install && npm run build && apt-get update && apt-get install -y \
-        gcc \
-        libpq-dev \
-        libgl1 \
-        libglib2.0-0 \
-        libxext6 \
-        libsm6 \
-        libxrender1 \
-        libxcb1 \
-    && rm -rf /var/lib/apt/lists/*
+RUN pip install --no-cache-dir pipenv && cd backend && pipenv install --deploy && cd .. && cd frontend && npm install && npm run build 
 
-RUN cd backend && pip install pipenv && pipenv install --deploy
+# Expose backend + frontend ports
+EXPOSE 8001 3000
 
-EXPOSE 8001 3002
-
-CMD ["pipenv", "run", "start"]
+# ---------- Default Command ----------
+# Start both backend and frontend
+CMD sh -c "cd /app/backend && pipenv run start & \
+           sleep 20 && \
+           cd /app/frontend && npm start"
