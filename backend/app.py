@@ -11,11 +11,13 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 
 from dotenv import load_dotenv
+from psycopg2.errors import UniqueViolation
 
 from rule_generation import generate_rules_from_pdf
 from rule_check import analyze_single_file
 
 load_dotenv()
+
 
 # ==========================================================
 # FASTAPI INIT
@@ -31,11 +33,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
 # ==========================================================
 # DATABASE CONNECTION
 # ==========================================================
 
 def get_connection():
+
     return psycopg2.connect(
         host=os.getenv("DB_HOST"),
         port=os.getenv("DB_PORT"),
@@ -46,45 +50,7 @@ def get_connection():
 
 
 # ==========================================================
-# DATABASE TABLE INITIALIZATION
-# ==========================================================
-
-def initialize_tables():
-
-    conn = get_connection()
-
-    with conn.cursor() as cursor:
-
-        # Documents table
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS documents (
-            id SERIAL PRIMARY KEY,
-            filename TEXT,
-            file_data BYTEA,
-            uploaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );
-        """)
-
-        # Rules table linked to documents
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS rules (
-            id SERIAL PRIMARY KEY,
-            document_id INTEGER REFERENCES documents(id) ON DELETE CASCADE,
-            rule_id TEXT,
-            rule_json JSONB,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );
-        """)
-
-        conn.commit()
-
-    conn.close()
-
-
-initialize_tables()
-
-# ==========================================================
-# PDF UPLOAD
+# FILE UPLOAD
 # ==========================================================
 
 @app.post("/upload_file")
@@ -92,81 +58,50 @@ async def upload_file(file: UploadFile = File(...)):
 
     filename = file.filename.lower()
 
-    # ======================================================
-    # PDF FILE
-    # ======================================================
-
-    if filename.endswith(".pdf"):
-
-        file_bytes = await file.read()
-
-        conn = get_connection()
-
-        with conn.cursor() as cursor:
-
-            cursor.execute(
-                """
-                INSERT INTO documents (filename, file_data)
-                VALUES (%s, %s)
-                RETURNING id;
-                """,
-                (file.filename, psycopg2.Binary(file_bytes))
-            )
-
-            document_id = cursor.fetchone()[0]
-
-            conn.commit()
-
-        conn.close()
-
-        return {
-            "type": "pdf",
-            "message": "PDF uploaded successfully",
-            "document_id": document_id
-        }
-
-    # ======================================================
-    # PYTHON FILE
-    # ======================================================
-
-    elif filename.endswith(".py"):
-
-        code = await file.read()
-
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".py") as temp_file:
-
-            temp_file.write(code)
-            temp_file_path = temp_file.name
-
-        metadata = {
-            "patients": ["patient_id", "ssn", "dob"],
-            "healthcare_providers": ["provider_id", "npi"]
-        }
-
-        try:
-
-            analyze_single_file(temp_file_path, metadata)
-
-        finally:
-
-            os.remove(temp_file_path)
-
-        return {
-            "type": "python",
-            "message": "Compliance analysis completed"
-        }
-
-    # ======================================================
-    # INVALID FILE
-    # ======================================================
-
-    else:
-
+    if not (filename.endswith(".pdf") or filename.endswith(".py")):
         raise HTTPException(
             status_code=400,
             detail="Only PDF and .py files are supported"
         )
 
+    file_bytes = await file.read()
+
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    # check duplicate filename
+    cursor.execute(
+        "SELECT id FROM documents WHERE filename = %s",
+        (filename,)
+    )
+
+    existing = cursor.fetchone()
+
+    if existing:
+        conn.close()
+        raise HTTPException(
+            status_code=400,
+            detail="A file with this name already exists"
+        )
+    else:
+        cursor.execute(
+        """
+        INSERT INTO documents (filename, file_data)
+        VALUES (%s, %s)
+        RETURNING id;
+        """,
+        (filename, psycopg2.Binary(file_bytes))
+        )
+        document_id = cursor.fetchone()[0]
+        conn.commit()
+        conn.close()
+    file_type = "pdf" if filename.endswith(".pdf") else "python"
+
+    return {
+        "type": file_type,
+        "message": "File uploaded successfully",
+        "document_id": document_id
+    }
 
 # ==========================================================
 # LIST DOCUMENTS
@@ -192,6 +127,7 @@ def list_documents():
     documents = []
 
     for r in rows:
+
         documents.append({
             "id": r[0],
             "filename": r[1],
@@ -228,7 +164,7 @@ def get_document(doc_id: int):
 
     return StreamingResponse(
         io.BytesIO(file_data),
-        media_type="application/pdf",
+        media_type="application/octet-stream",
         headers={
             "Content-Disposition": f"attachment; filename={filename}"
         }
@@ -244,8 +180,6 @@ def generate_rules(doc_id: int):
 
     def stream():
 
-        
-
         conn = get_connection()
 
         with conn.cursor() as cursor:
@@ -260,11 +194,17 @@ def generate_rules(doc_id: int):
         if not row:
             yield "Document not found\n"
             return
-        yield "Parsing PDF...\n"
 
         filename, file_data = row
 
+        if not filename.endswith(".pdf"):
+            yield "Rule generation only works for PDF files\n"
+            return
+
+        yield "Parsing PDF...\n"
+
         with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp_pdf:
+
             temp_pdf.write(file_data)
             temp_pdf_path = temp_pdf.name
 
@@ -283,42 +223,61 @@ def generate_rules(doc_id: int):
 
 
 # ==========================================================
-# PYTHON FILE UPLOAD FOR COMPLIANCE CHECK
+# COMPLIANCE CHECK
 # ==========================================================
 
-@app.post("/check_compliance")
-async def check_compliance(file: UploadFile = File(...)):
+@app.post("/check_compliance/{doc_id}")
+def check_compliance(doc_id: int):
 
-    if not file.filename.lower().endswith(".py"):
-        raise HTTPException(status_code=400, detail="Only Python files allowed")
+    def stream():
 
-    code = await file.read()
+        conn = get_connection()
 
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".py") as temp_file:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT filename, file_data FROM documents WHERE id=%s",
+                (doc_id,)
+            )
+            row = cursor.fetchone()
 
-        temp_file.write(code)
-        temp_file_path = temp_file.name
+        conn.close()
 
-    metadata = {
-        "patients": ["patient_id", "ssn", "dob"],
-        "healthcare_providers": ["provider_id", "npi"]
-    }
+        if not row:
+            yield "Document not found\n"
+            return
 
-    try:
+        filename, file_data = row
 
-        analyze_single_file(temp_file_path, metadata)
+        if not filename.endswith(".py"):
+            yield "Compliance check only works for Python files\n"
+            return
 
-    finally:
+        yield "Preparing Python file...\n"
 
-        os.remove(temp_file_path)
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".py") as temp_file:
+            temp_file.write(file_data)
+            temp_path = temp_file.name
 
-    return {
-        "message": "Compliance analysis completed"
-    }
+        metadata = {
+            "patients": ["patient_id", "ssn", "dob"],
+            "healthcare_providers": ["provider_id", "npi"]
+        }
 
+        try:
+
+            yield "Running compliance scanner...\n"
+
+            for message in analyze_single_file(temp_path, metadata):
+                yield message
+
+        finally:
+
+            os.remove(temp_path)
+
+    return StreamingResponse(stream(), media_type="text/plain")
 
 # ==========================================================
-# SERVE FRONTEND (React BUILD)
+# SERVE FRONTEND
 # ==========================================================
 
 frontend_path = Path("frontend/build")

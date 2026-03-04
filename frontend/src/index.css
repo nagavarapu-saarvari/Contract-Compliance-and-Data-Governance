@@ -45,7 +45,7 @@ code {
 .guided-item {
   padding: 20px 14px;
   cursor: pointer;
-  border-radius: 8px;
+  border-radius: 20px;
   background-color: white;
   margin-bottom: 10px;
   font-size: 14px;

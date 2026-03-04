@@ -1,5 +1,5 @@
 import React, { useState, useRef } from "react";
-import { uploadFile, checkCompliance } from "../services/api";
+import { uploadFile} from "../services/api";
 import { Card, CardContent, CardHeader, CardTitle } from "./ui/card";
 import { Button } from "./ui/button";
 import { Upload, AlertCircle } from "lucide-react";
@@ -35,7 +35,9 @@ function FileUpload({ refreshDocs }) {
 
       else if (fileName.endsWith(".py")) {
 
-        await checkCompliance(file);
+        await uploadFile(file);
+        alert("Python file uploaded successfully")
+        refreshDocs();
         clearFile();
 
       }
@@ -49,8 +51,11 @@ function FileUpload({ refreshDocs }) {
 
     } catch (error) {
 
-      console.error(error);
-      alert("Error processing file");
+      if (error.response && error.response.data) {
+      alert(error.response.data.detail);
+      } else {
+        alert("File upload failed");
+      }
       clearFile();
 
     }

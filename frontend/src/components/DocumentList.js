@@ -29,10 +29,9 @@ function DocumentList({ documents, selectedDoc, setSelectedDoc }) {
                 }}
               >
                 <input
-                  type="radio"
-                  name="document"
+                  type="checkbox"
                   checked={selectedDoc === doc.id}
-                  onChange={() => setSelectedDoc(doc.id)}
+                  onChange={() => setSelectedDoc(selectedDoc === doc.id ? null : doc.id)}
                   className="w-4 h-4 text-primary-600 cursor-pointer"
                 />
                 <span className="text-sm font-medium text-slate-700 flex-1 truncate">
