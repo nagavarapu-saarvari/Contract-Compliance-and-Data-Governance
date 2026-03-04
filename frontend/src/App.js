@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from "react";
 
+import Navbar from "./components/Navbar";
 import ModelSelector from "./components/ModelSelector";
 import FileUpload from "./components/FileUpload";
 import DocumentList from "./components/DocumentList";
@@ -22,20 +23,13 @@ function App() {
   }, []);
 
   return (
-    <div className="container">
+    <div className="min-h-screen bg-gradient-to-br from-slate-50 to-primary-50">
+      {/* NAVBAR */}
+      <Navbar />
 
-      {/* LOGO SECTION */}
-      <div className="top-bar">
-        <img
-          src="/logo.png"
-          alt="Logo"
-          className="logo"
-        />
-      </div>
-
-      <div className="layout">
-
-        <div className="sidebar">
+      <div className="flex h-[calc(100vh-64px)]">
+        {/* SIDEBAR */}
+        <div className="w-80 border-r border-slate-200 bg-white overflow-y-auto p-6 space-y-6 shadow-sm">
 
           <ModelSelector />
 
@@ -49,7 +43,10 @@ function App() {
 
         </div>
 
-        <PromptPanel selectedDoc={selectedDoc} />
+        {/* MAIN CONTENT */}
+        <div className="flex-1 overflow-hidden bg-white">
+          <PromptPanel selectedDoc={selectedDoc} />
+        </div>
 
       </div>
 
