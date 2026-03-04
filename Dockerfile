@@ -1,5 +1,5 @@
 # ---------- Base Image (Python) ----------
-FROM python:3.11-slim AS base
+FROM python:3.11 AS base
 
 # Install system dependencies (node + pipenv + others) and Node.js in one layer
 RUN apt-get update && apt-get install -y \
@@ -21,6 +21,6 @@ EXPOSE 8001 3000
 
 # ---------- Default Command ----------
 # Start both backend and frontend
-CMD sh -c "cd /app/backend && pipenv run start & \
+CMD sh -c "sleep 10 && cd /app/backend && pipenv run python setup_db.py && pipenv run start & \ 
            sleep 20 && \
            cd /app/frontend && npm start"

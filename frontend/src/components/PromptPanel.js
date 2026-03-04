@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { Card, CardContent } from "./ui/card";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
@@ -8,12 +8,13 @@ import { Sparkles, Send, Loader } from "lucide-react";
 function PromptPanel({ selectedDoc }) {
 
   const [prompt, setPrompt] = useState("");
-  const [statusMessage, setStatusMessage] = useState("");
-  const [rules, setRules] = useState([]);
-  const [violations, setViolations] = useState([]);
+  const [messages, setMessages] = useState([]);
   const [showGuided, setShowGuided] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [selectedDocType, setSelectedDocType] = useState(null);
+  const [chatStarted, setChatStarted] = useState(false);
+
+  const bottomRef = useRef(null);
 
   const guidedPrompts = [
     "Generate governance rules from the selected contract",
@@ -27,6 +28,9 @@ function PromptPanel({ selectedDoc }) {
     setShowGuided(false);
   };
 
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages]);
 
   useEffect(() => {
 
@@ -67,85 +71,142 @@ function PromptPanel({ selectedDoc }) {
 
   const handleSubmit = async () => {
 
-  if (!selectedDoc) {
-    alert("Please select a document first");
-    return;
-  }
-
-  setPrompt("");
-  setRules([]);
-  setIsLoading(true);
-
-  try {
-
-    let endpoint = "";
-
-    if (selectedDocType === "pdf") {
-      endpoint = `http://localhost:8001/generate_rules/${selectedDoc}`;
-      setStatusMessage("Parsing PDF...");
-    } 
-    else if (selectedDocType === "python") {
-      endpoint = `http://localhost:8001/check_compliance/${selectedDoc}`;
-      setStatusMessage("Preparing Python file...");
+    if (!selectedDoc) {
+      alert("Please select a document first");
+      return;
     }
 
-    const response = await fetch(endpoint, { method: "POST" });
+    if (!prompt.trim()) return;
 
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
+    setChatStarted(true);
 
-    while (true) {
+    const userMessage = { role: "user", content: prompt };
 
-      const { value, done } = await reader.read();
-      if (done) break;
+    setMessages(prev => [...prev, userMessage]);
 
-      const chunk = decoder.decode(value);
-      const lines = chunk.split("\n");
+    setPrompt("");
+    setIsLoading(true);
 
-      lines.forEach(line => {
+    let assistantIndex;
 
-        if (!line.trim()) return;
+    setMessages(prev => {
+      assistantIndex = prev.length;
+      return [
+        ...prev,
+        { role: "assistant", content: "Processing..." }
+      ];
+    });
 
-        if (line.startsWith("{")) {
+    try {
 
-          const parsed = JSON.parse(line);
+      let endpoint = "";
 
-          if (parsed.type === "rules") {
-            setRules(parsed.rules);
-            setStatusMessage("");
-          }
-          if (parsed.type === "violations"){
-            if (parsed.violations.length === 0){
-              setStatusMessage("✔ Safe to execute the file")
+      if (selectedDocType === "pdf") {
+        endpoint = `http://localhost:8001/generate_rules/${selectedDoc}`;
+      }
+      else if (selectedDocType === "python") {
+        endpoint = `http://localhost:8001/check_compliance/${selectedDoc}`;
+      }
+
+      const response = await fetch(endpoint, { method: "POST" });
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+
+      while (true) {
+
+        const { value, done } = await reader.read();
+        if (done) break;
+
+        const chunk = decoder.decode(value);
+        const lines = chunk.split("\n");
+
+        for (const line of lines) {
+
+          if (!line.trim()) continue;
+
+          if (line.startsWith("{")) {
+
+            const parsed = JSON.parse(line);
+
+            if (parsed.type === "rules") {
+
+              setMessages(prev => {
+                const updated = [...prev];
+                updated[assistantIndex] = {
+                  role: "assistant",
+                  type: "rules",
+                  data: parsed.rules
+                };
+                return updated;
+              });
+
             }
-            else{
-              setViolations(parsed.violations)
-              setStatusMessage("")
+
+            if (parsed.type === "violations") {
+
+              setMessages(prev => {
+                const updated = [...prev];
+
+                if (parsed.violations.length === 0) {
+
+                  updated[assistantIndex] = {
+                    role: "assistant",
+                    content: "✔ Safe to execute the file"
+                  };
+
+                } else {
+
+                  updated[assistantIndex] = {
+                    role: "assistant",
+                    type: "violations",
+                    data: parsed.violations
+                  };
+
+                }
+
+                return updated;
+              });
+
             }
+
+          } else {
+
+            setMessages(prev => {
+              const updated = [...prev];
+              updated[assistantIndex] = {
+                role: "assistant",
+                content: line
+              };
+              return updated;
+            });
+
           }
-
-        } else {
-
-          setStatusMessage(line);
 
         }
 
+      }
+
+    } catch (error) {
+
+      console.error(error);
+
+      setMessages(prev => {
+        const updated = [...prev];
+        updated[assistantIndex] = {
+          role: "assistant",
+          content: "Error processing document"
+        };
+        return updated;
       });
+
+    } finally {
+
+      setIsLoading(false);
 
     }
 
-  } catch (error) {
-
-    console.error(error);
-    setStatusMessage("Error processing document");
-
-  } finally {
-
-    setIsLoading(false);
-
-  }
-
-};
+  };
 
 
   return (
@@ -154,145 +215,135 @@ function PromptPanel({ selectedDoc }) {
       <Card className="flex-1 overflow-hidden shadow-lg border-l-4 border-l-primary-500">
         <CardContent className="h-full p-6 overflow-auto">
 
-          {rules.length === 0 && violations.length === 0 && statusMessage && (
-            <div className="flex flex-col items-center justify-center h-full gap-4">
+          {!chatStarted && (
+            <div className="flex flex-col items-center justify-center h-full gap-4 text-slate-500">
+
+              <Sparkles className="h-12 w-12 text-primary-300" />
+
+              <p className="text-center">
+                {selectedDoc
+                  ? "Select a guided prompt or enter a custom prompt"
+                  : "Select a document to get started"}
+              </p>
+
+            </div>
+          )}
+
+          {chatStarted && (
+
+            <div className="flex flex-col gap-6">
+
+              {messages.map((msg, index) => (
+
+                <div
+                  key={index}
+                  className={`max-w-3xl rounded-lg p-4 ${
+                    msg.role === "user"
+                      ? "ml-auto bg-primary-500 text-white"
+                      : "bg-slate-100 text-slate-800"
+                  }`}
+                >
+
+                  {!msg.type && <p>{msg.content}</p>}
+
+                  {msg.type === "rules" && (
+
+                    <Table>
+
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Rule ID</TableHead>
+                          <TableHead>Title</TableHead>
+                          <TableHead>Description</TableHead>
+                          <TableHead>Category</TableHead>
+                          <TableHead>Effect</TableHead>
+                        </TableRow>
+                      </TableHeader>
+
+                      <TableBody>
+
+                        {msg.data.map((rule, i) => (
+
+                          <TableRow key={i}>
+
+                            <TableCell>{rule.rule_id}</TableCell>
+                            <TableCell>{rule.title}</TableCell>
+                            <TableCell className="whitespace-normal break-words">
+                              {rule.description}
+                            </TableCell>
+                            <TableCell>
+                              <span className="px-3 py-1 rounded-full text-xs bg-primary-100 text-primary-700 whitespace-nowrap">
+                                {rule.action_category}
+                              </span>
+                            </TableCell>
+                            <TableCell>
+                              <span className={`px-3 py-1 rounded-full text-xs ${
+                                rule.effect === "Allow"
+                                  ? "bg-green-100 text-green-700"
+                                  : "bg-red-100 text-red-700"
+                              }`}>
+                                {rule.effect}
+                              </span>
+                            </TableCell>
+
+                          </TableRow>
+
+                        ))}
+
+                      </TableBody>
+
+                    </Table>
+
+                  )}
+
+                  {msg.type === "violations" && (
+
+                    <Table>
+
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Function</TableHead>
+                          <TableHead>Rule ID</TableHead>
+                          <TableHead>Title</TableHead>
+                          <TableHead>Reason</TableHead>
+                        </TableRow>
+                      </TableHeader>
+
+                      <TableBody>
+
+                        {msg.data.map((v, i) => (
+
+                          <TableRow key={i}>
+                            <TableCell>{v.function}</TableCell>
+                            <TableCell>{v.rule_id}</TableCell>
+                            <TableCell>{v.title}</TableCell>
+                            <TableCell>{v.reason}</TableCell>
+                          </TableRow>
+
+                        ))}
+
+                      </TableBody>
+
+                    </Table>
+
+                  )}
+
+                </div>
+
+              ))}
 
               {isLoading && (
-                <Loader className="h-8 w-8 text-primary-600 animate-spin" />
+                <div className="flex items-center gap-2 text-slate-500">
+                  <Loader className="h-5 w-5 animate-spin" />
+                  Processing...
+                </div>
               )}
 
-              <p className="text-lg font-medium text-slate-700">{statusMessage}</p>
+              <div ref={bottomRef}></div>
 
             </div>
+
           )}
-
-          {rules.length === 0 && violations.length === 0 && (
-  <div className="flex flex-col items-center justify-center h-full gap-4 text-slate-500">
-
-    <Sparkles className="h-12 w-12 text-primary-300" />
-
-    <p className="text-center">
-      {selectedDoc
-        ? "Select a guided prompt or enter a custom prompt"
-        : "Select a document to get started"}
-    </p>
-
-  </div>
-)}
-
-          {rules.length > 0 && (
-            <div className="space-y-4">
-
-              <h3 className="text-lg font-semibold text-slate-800">
-                Generated Rules
-              </h3>
-
-              <div className="border border-slate-200 rounded-lg overflow-hidden">
-
-                <Table>
-
-                  <TableHeader>
-
-                    <TableRow className="bg-slate-100">
-
-                      <TableHead>Rule ID</TableHead>
-                      <TableHead>Title</TableHead>
-                      <TableHead>Description</TableHead>
-                      <TableHead>Category</TableHead>
-                      <TableHead>Effect</TableHead>
-
-                    </TableRow>
-
-                  </TableHeader>
-
-                  <TableBody>
-
-                    {rules.map((rule, index) => (
-
-                      <TableRow key={index} className="hover:bg-primary-50">
-
-                        <TableCell className="font-mono text-primary-600">
-                          {rule.rule_id}
-                        </TableCell>
-
-                        <TableCell>
-                          {rule.title}
-                        </TableCell>
-
-                        <TableCell className="max-w-xs whitespace-normal break-words">
-                          {rule.description}
-                        </TableCell>
-
-                        <TableCell>
-                          <span className="px-3 py-1 rounded-full text-xs bg-primary-100 text-primary-700 whitespace-nowrap">
-                            {rule.action_category}
-                          </span>
-                        </TableCell>
-
-                        <TableCell>
-                          <span className={`px-3 py-1 rounded-full text-xs ${
-                            rule.effect === "Allow"
-                              ? "bg-green-100 text-green-700"
-                              : "bg-red-100 text-red-700"
-                          }`}>
-                            {rule.effect}
-                          </span>
-                        </TableCell>
-
-                      </TableRow>
-
-                    ))}
-
-                  </TableBody>
-
-                </Table>
-
-              </div>
-
-            </div>
-          )}
-
-          {violations.length > 0 && (
-
-            <div className="space-y-4">
-
-              <h3 className="text-lg font-semibold text-red-700">
-                Compliance Violations
-              </h3>
-
-              <Table>
-
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Function</TableHead>
-                    <TableHead>Rule ID</TableHead>
-                    <TableHead>Title</TableHead>
-                    <TableHead>Reason</TableHead>
-                  </TableRow>
-                </TableHeader>
-
-                <TableBody>
-
-          {violations.map((v, index) => (
-
-              <TableRow key={index}>
-
-              <TableCell>{v.function}</TableCell>
-              <TableCell>{v.rule_id}</TableCell>
-              <TableCell>{v.title}</TableCell>
-              <TableCell>{v.reason}</TableCell>
-
-            </TableRow>
-
-          ))}
-
-        </TableBody>
-
-      </Table>
-
-    </div>
-
-    )}
 
         </CardContent>
       </Card>
@@ -316,7 +367,7 @@ function PromptPanel({ selectedDoc }) {
                   onClick={() => selectGuidedPrompt(text)}
                   className="p-3 text-left text-sm bg-slate-50 hover:bg-primary-100 border rounded"
                 >
-                {text}
+                  {text}
                 </button>
 
               ))}
@@ -342,6 +393,11 @@ function PromptPanel({ selectedDoc }) {
                 placeholder="Enter your prompt..."
                 value={prompt}
                 onChange={(e) => setPrompt(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && prompt.trim() && !isLoading) {
+                    handleSubmit();
+                  }
+                }}
                 disabled={isLoading}
                 className="pr-20"
               />

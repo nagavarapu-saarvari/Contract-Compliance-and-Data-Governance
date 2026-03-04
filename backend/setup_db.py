@@ -24,7 +24,19 @@ conn.autocommit = True
 cursor = conn.cursor()
 
 # create database
-cursor.execute(f"CREATE DATABASE {DB_NAME};")
+cursor.execute(
+    "SELECT 1 FROM pg_database WHERE datname = %s",
+    (DB_NAME,)
+)
+
+exists = cursor.fetchone()
+
+if not exists:
+    print(f"Creating database: {DB_NAME}")
+    cursor.execute(f"CREATE DATABASE {DB_NAME}")
+else:
+    print(f"Database {DB_NAME} already exists")
+
 
 cursor.close()
 conn.close()
@@ -43,7 +55,7 @@ cursor = conn.cursor()
 
 # create documents table
 cursor.execute("""
-CREATE TABLE documents (
+CREATE TABLE IF NOT EXISTS documents (
     id SERIAL PRIMARY KEY,
     filename TEXT,
     file_data BYTEA,
@@ -53,7 +65,7 @@ CREATE TABLE documents (
 
 # create rules table
 cursor.execute("""
-CREATE TABLE rules (
+CREATE TABLE IF NOT EXISTS rules (
     id SERIAL PRIMARY KEY,
     document_id INTEGER REFERENCES documents(id),
     rule_id TEXT,
