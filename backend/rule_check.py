@@ -1,5 +1,4 @@
 import ast
-import re
 import json
 import os
 import psycopg2
@@ -8,55 +7,6 @@ from dotenv import load_dotenv
 from openai import AzureOpenAI
 
 load_dotenv()
-
-# ==========================================================
-# CONFIGURATION
-# ==========================================================
-
-HTTP_LIBRARIES = ["requests", "httpx", "aiohttp"]
-HTTP_METHODS = ["get", "post", "put", "delete", "patch"]
-
-EXPORT_METHODS = [
-    "to_csv",
-    "to_excel",
-    "to_json",
-    "dump",
-    "dumps"
-]
-
-SQL_PATTERN = re.compile(
-    r"(SELECT|INSERT|UPDATE|DELETE).*?(FROM|INTO)\s+([\w\.]+)",
-    re.IGNORECASE | re.DOTALL
-)
-
-JOIN_PATTERN = re.compile(
-    r"\b(?:INNER|LEFT|RIGHT|FULL|CROSS|NATURAL)?\s*(?:OUTER)?\s*JOIN\s+([\w\.]+)",
-    re.IGNORECASE
-)
-
-INTERNAL_PATHS = [
-    "./",
-    "/tmp/",
-    "/var/",
-    "/logs/",
-    "logs/",
-    "internal/"
-]
-
-# ==========================================================
-# HELPER FUNCTION
-# ==========================================================
-
-def is_internal_path(path: str) -> bool:
-    if not path:
-        return False
-
-    path = path.lower()
-    return any(path.startswith(prefix) for prefix in INTERNAL_PATHS)
-
-# ==========================================================
-# DATABASE RULE REPOSITORY
-# ==========================================================
 
 class RuleRepository:
 
@@ -69,281 +19,176 @@ class RuleRepository:
             password=os.getenv("DB_PASSWORD")
         )
 
-    def fetch_all_rules(self) -> List[Dict]:
+    def fetch_all_rules(self):
+
         with self.conn.cursor() as cursor:
-            cursor.execute("SELECT rule_json FROM rules;")
+            cursor.execute("SELECT rule_json FROM rules")
             rows = cursor.fetchall()
+
         return [row[0] for row in rows]
 
-# ==========================================================
-# LLM SERVICE
-# ==========================================================
 
 class AzureLLMService:
 
     def __init__(self):
+
         self.client = AzureOpenAI(
             api_key=os.getenv("AZURE_OPENAI_API_KEY"),
             azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT"),
             api_version=os.getenv("AZURE_OPENAI_API_VERSION"),
         )
+
         self.deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT")
 
-    def evaluate_block(self, code_block: str, rules: List[Dict]) -> Dict:
+
+    def evaluate_block(self, code_block, rules):
 
         system_prompt = """
-        You are an enterprise contract compliance engine.
+You are an enterprise contract compliance engine.
 
-        You will receive:
-        1. A Python code block.
-        2. A list of governance rules.
+You will receive:
+1. Python code
+2. Governance rules
 
-        Determine whether the code violates any rule.
-        If a rule has effect = "deny" and the code performs that action,
-        mark it as a violation.
+Detect rule violations.
 
-        Return STRICT JSON:
+Return JSON:
 
-        {
-        "violations": [
-            {
-                "rule_id": "",
-                "title": "",
-                "reason": ""
-            }
-        ]
-        }
-        """
+{
+"violations":[
+{
+"rule_id":"",
+"title":"",
+"reason":""
+}
+]
+}
+"""
 
         user_prompt = f"""
-        Rules:
-        {json.dumps(rules, indent=2)}
+Rules:
+{json.dumps(rules)}
 
-        Code Block:
-        {code_block}
-        """
+Code:
+{code_block}
+"""
 
         response = self.client.chat.completions.create(
             model=self.deployment,
             messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
+                {"role":"system","content":system_prompt},
+                {"role":"user","content":user_prompt}
             ],
-            response_format={"type": "json_object"},
+            response_format={"type":"json_object"},
             temperature=0
         )
 
         return json.loads(response.choices[0].message.content)
 
 
-# ==========================================================
-# COMPLIANCE SCANNER
-# ==========================================================
-
 class ComplianceScanner(ast.NodeVisitor):
 
-    def __init__(self, source_code: str, metadata: Dict):
+    def __init__(self, source_code):
+
         self.source_code = source_code
         self.lines = source_code.split("\n")
-
-        self.metadata = {
-            table.lower(): [col.lower() for col in cols]
-            for table, cols in metadata.items()
-        }
-
         self.current_function = None
         self.blocks_for_review = []
-        self.module_scope_flagged = False
+
 
     def visit_FunctionDef(self, node):
+
         self.current_function = node
         self.generic_visit(node)
         self.current_function = None
 
+
     def visit_Call(self, node):
-
-        # ------------------------------
-        # API Detection
-        # ------------------------------
-        if isinstance(node.func, ast.Attribute):
-            method_name = node.func.attr
-
-            if method_name in HTTP_METHODS:
-                
-                self._register_review(node, "API call detected")
-
-            # ------------------------------
-            # Export Detection
-            # ------------------------------
-            if method_name in EXPORT_METHODS:
-
-                export_path = None
-
-                if node.args and isinstance(node.args[0], ast.Constant):
-                    export_path = node.args[0].value
-
-                for kw in node.keywords:
-                    if isinstance(kw.value, ast.Constant):
-                        export_path = kw.value.value
-
-                if export_path and is_internal_path(export_path):
-                    return
-
-                self._register_review(
-                    node,
-                    f"Export detected: {export_path}"
-                )
-
-        # ------------------------------
-        # open(..., "w") Detection
-        # ------------------------------
-        if isinstance(node.func, ast.Name) and node.func.id == "open":
-
-            file_path = None
-            mode = None
-
-            if len(node.args) >= 1 and isinstance(node.args[0], ast.Constant):
-                file_path = node.args[0].value
-
-            if len(node.args) >= 2 and isinstance(node.args[1], ast.Constant):
-                mode = node.args[1].value
-
-            if mode and "w" in mode:
-
-                if file_path and is_internal_path(file_path):
-                    return
-
-                self._register_review(
-                    node,
-                    f"File write detected: {file_path}"
-                )
-
-        self.generic_visit(node)
-
-    def visit_Constant(self, node):
-
-        if isinstance(node.value, str):
-            sql_text = node.value.lower()
-
-            sql_matches = SQL_PATTERN.findall(sql_text)
-            for match in sql_matches:
-                table = match[2].split(".")[-1]
-                if table in self.metadata:
-                    self._register_review(
-                        node,
-                        f"Sensitive table '{table}' used"
-                    )
-                    return
-
-            join_matches = JOIN_PATTERN.findall(sql_text)
-            for join_table in join_matches:
-                table = join_table.split(".")[-1]
-                if table in self.metadata:
-                    self._register_review(
-                        node,
-                        f"Sensitive JOIN '{table}' used"
-                    )
-                    return
-
-        self.generic_visit(node)
-
-    def _register_review(self, node, reason):
 
         if self.current_function:
 
-            function_node = self.current_function
-
-            function_code = "\n".join(
+            code = "\n".join(
                 self.lines[
-                    function_node.lineno - 1:
-                    function_node.end_lineno
+                    self.current_function.lineno - 1:
+                    self.current_function.end_lineno
                 ]
             )
 
-            if not any(f["code"] == function_code for f in self.blocks_for_review):
+            if not any(b["code"] == code for b in self.blocks_for_review):
+
                 self.blocks_for_review.append({
                     "scope": "function",
-                    "name": function_node.name,
-                    "reason": reason,
-                    "code": function_code
+                    "name": self.current_function.name,
+                    "code": code
                 })
 
-        else:
+        self.generic_visit(node)
 
-            if not self.module_scope_flagged:
-                self.module_scope_flagged = True
 
-                self.blocks_for_review.append({
-                    "scope": "module",
-                    "name": "<module_scope>",
-                    "reason": reason,
-                    "code": self.source_code
-                })
-
-# ==========================================================
-# ORCHESTRATION
-# ==========================================================
 
 def analyze_single_file(file_path: str, metadata: Dict):
 
-    with open(file_path, "r", encoding="utf-8") as f:
+    yield "Scanning Python file...\n"
+
+    with open(file_path,"r",encoding="utf-8") as f:
         code = f.read()
 
-    violation_count = 0
     tree = ast.parse(code)
-    scanner = ComplianceScanner(code, metadata)
+
+    scanner = ComplianceScanner(code)
     scanner.visit(tree)
 
     if not scanner.blocks_for_review:
-        print("No suspicious blocks detected.")
+
+        yield "No suspicious blocks detected\n"
+
+        yield json.dumps({
+            "type":"violations",
+            "violations":[],
+            "safe":True
+        }) + "\n"
+
         return
 
-    rule_repo = RuleRepository()
-    rules = rule_repo.fetch_all_rules()
+
+    yield "Evaluating detected blocks...\n"
+
+    repo = RuleRepository()
+    rules = repo.fetch_all_rules()
 
     llm = AzureLLMService()
 
+    violations_list = []
+
     for block in scanner.blocks_for_review:
-        
-        result = llm.evaluate_block(block["code"], rules)
-        violations = result.get("violations", [])
 
-        if violations:
-            violation_count += 1
-            print(f"Scope: {block['scope']}")
-            print(f"Name: {block['name']}")
-            print(f"Initial Reason: {block['reason']}")
-            print(f"\nCode:\n{block['code']}\n")
-            print("Violations Detected:")
-            for v in violations:
-                print(f"- Rule {v['rule_id']}: {v['reason']}")
-        else:
-            continue
+        result = llm.evaluate_block(block["code"],rules)
 
-    if violation_count == 0:
-        print("No Violations Detected")
-        print("Safe to execute the file\n\n")
+        violations = result.get("violations",[])
 
-def analyze_multiple_files(files_list: List, metadata: Dict):
-    print("\n\nCompliance Evaluation Results:\n")
-    for file_name in files_list:
-        print("-"*50)
-        print(file_name)
-        print("-"*50)
-        analyze_single_file(file_name,metadata)
-# ==========================================================
-# RUN
-# ==========================================================
+        for v in violations:
+
+            violations_list.append({
+                "rule_id":v["rule_id"],
+                "title":v["title"],
+                "reason":v["reason"],
+                "scope":block["scope"],
+                "function":block["name"]
+            })
 
 
-# metadata = {
-#     "patients": ["patient_id", "ssn", "dob"],
-#     "healthcare_providers": ["provider_id", "npi"]
-# }
+    if len(violations_list) == 0:
 
-# file_list = [
-#     'test_scripts/test_script_breach.py',
-#     'test_scripts/test_script_safe.py'
-# ]
+        yield json.dumps({
+            "type":"violations",
+            "violations":[],
+            "safe":True
+        }) + "\n"
 
-# analyze_multiple_files(file_list, metadata)
+    else:
+
+        yield json.dumps({
+            "type":"violations",
+            "violations":violations_list,
+            "safe":False
+        }) + "\n"

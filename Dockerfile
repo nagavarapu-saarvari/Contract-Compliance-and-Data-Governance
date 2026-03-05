@@ -1,40 +1,41 @@
-# ---------- Stage 1: Build React ----------
-FROM node:18 AS frontend-build
+# ---------- Base Image (Python) ----------
+FROM python:3.11 AS base
 
-WORKDIR /app/frontend
-COPY frontend/package*.json ./
-RUN npm install
-COPY frontend/ .
-RUN npm run build
-
-# ---------- Stage 2: Backend ----------
-FROM python:3.11-slim
-
-WORKDIR /app
-
-# Install system dependencies for psycopg2
+# Install system dependencies
 RUN apt-get update && apt-get install -y \
+    curl \
     gcc \
     libpq-dev \
     libgl1 \
     libglib2.0-0 \
-    libxext6 \
     libsm6 \
+    libxext6 \
     libxrender1 \
     libxcb1 \
+    tesseract-ocr \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Install Node.js
+RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && apt-get install -y nodejs \
+    && npm install -g npm@latest
 
-# Copy backend files
-COPY app.py .
-COPY rule_check.py .
-COPY rule_generation.py .
+# Set working directory
+WORKDIR /app
 
-# Copy built React app
-COPY --from=frontend-build /app/frontend/build ./frontend/build
+# Copy project
+COPY . .
 
-EXPOSE 8001
+# Install Python + frontend dependencies
+RUN pip install --no-cache-dir pipenv \
+    && cd backend && pipenv install --deploy \
+    && cd ../frontend && npm install && npm run build
 
-CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8001"]
+# Expose ports
+EXPOSE 8001 3000
+
+# ---------- Default Command ----------
+CMD sh -c "sleep 10 && \
+           cd /app/backend && pipenv run python setup_db.py && pipenv run start & \
+           sleep 20 && \
+           cd /app/frontend && npm start"

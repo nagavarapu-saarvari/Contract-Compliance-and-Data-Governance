@@ -1,6 +1,140 @@
-body{
-margin:0;
-font-family:Arial;
-background:#eef4ff;
-color:#1e3a5f;
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Roboto", "Oxygen",
+    "Ubuntu", "Cantarell", "Fira Sans", "Droid Sans", "Helvetica Neue",
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  background: linear-gradient(135deg, #f8fafc 0%, #f1f5fe 100%);
+  color: #1e293b;
+}
+
+code {
+  font-family: source-code-pro, Menlo, Monaco, Consolas, "Courier New",
+    monospace;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: #f1f5fe;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
+
+.guided-item {
+  padding: 20px 14px;
+  cursor: pointer;
+  border-radius: 20px;
+  background-color: white;
+  margin-bottom: 10px;
+  font-size: 14px;
+  white-space: normal;
+  overflow: visible;
+  text-overflow: unset;
+  word-break: break-word;
+}
+
+.guided-item:hover {
+  background-color: #e8f1fb;
+}
+
+.prompt-container {
+  display: flex;
+  gap: 10px;
+  margin-top: 15px;
+  align-items: center;
+}
+
+.input-wrapper {
+  position: relative;
+  flex: 1;
+}
+
+.prompt-input {
+  width: 100%;
+  height: 42px;
+  padding: 0 60px 0 16px;
+  border-radius: 25px;
+  border: 1px solid #c5d6e8;
+  outline: none;
+  font-size: 14px;
+}
+
+.guided-button {
+  position: absolute;
+  right: 0.5px;
+  top: 10px;
+  transform: translateY(-50%);
+  border: none;
+  background: transparent;
+  font-size: 18px;
+  cursor: pointer;
+}
+
+.send-button {
+  margin-top: 0px;
+  height: 42px;
+  padding: 0 20px;
+  border-radius: 25px;
+  background-color: #8fb0cf;
+  color: white;
+  border: none;
+  cursor: pointer;
+}
+
+.rules-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+
+.rules-table th {
+  text-align: left;
+  padding: 10px;
+  background: #eef4fb;
+  border-bottom: 1px solid #c7d6e6;
+  color: #4f7aa3;
+}
+
+.rules-table td {
+  padding: 10px;
+  border-bottom: 1px solid #e3edf7;
+}
+
+.rules-table tr:hover {
+  background: #f5f9fd;
+}
+
+.status-message {
+  font-size: 16px;
+  color: #2c4a6e;
+  margin: 20px;
+  animation: blink 1.2s infinite;
+}
+
+@keyframes blink {
+  0% {opacity: 1;}
+  50% {opacity: 0.3;}
+  100% {opacity: 1;}
 }
