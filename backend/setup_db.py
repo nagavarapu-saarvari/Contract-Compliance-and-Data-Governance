@@ -70,7 +70,8 @@ CREATE TABLE IF NOT EXISTS rules (
     document_id INTEGER REFERENCES documents(id),
     rule_id TEXT,
     rule_json JSONB,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(document_id,rule_id)
 );
 """)
 

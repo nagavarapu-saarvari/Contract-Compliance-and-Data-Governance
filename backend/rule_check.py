@@ -2,15 +2,20 @@ import ast
 import json
 import os
 import psycopg2
-from typing import Dict, List
 from dotenv import load_dotenv
 from openai import AzureOpenAI
 
 load_dotenv()
 
+
+# ==========================================================
+# RULE REPOSITORY
+# ==========================================================
+
 class RuleRepository:
 
     def __init__(self):
+
         self.conn = psycopg2.connect(
             host=os.getenv("DB_HOST"),
             port=os.getenv("DB_PORT"),
@@ -19,14 +24,26 @@ class RuleRepository:
             password=os.getenv("DB_PASSWORD")
         )
 
-    def fetch_all_rules(self):
+    def fetch_rules_by_document(self, document_id):
 
         with self.conn.cursor() as cursor:
-            cursor.execute("SELECT rule_json FROM rules")
+
+            cursor.execute(
+                "SELECT rule_json FROM rules WHERE document_id=%s",
+                (document_id,)
+            )
+
             rows = cursor.fetchall()
 
         return [row[0] for row in rows]
 
+    def close(self):
+        self.conn.close()
+
+
+# ==========================================================
+# LLM SERVICE
+# ==========================================================
 
 class AzureLLMService:
 
@@ -76,15 +93,19 @@ Code:
         response = self.client.chat.completions.create(
             model=self.deployment,
             messages=[
-                {"role":"system","content":system_prompt},
-                {"role":"user","content":user_prompt}
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
             ],
-            response_format={"type":"json_object"},
+            response_format={"type": "json_object"},
             temperature=0
         )
 
         return json.loads(response.choices[0].message.content)
 
+
+# ==========================================================
+# AST SCANNER
+# ==========================================================
 
 class ComplianceScanner(ast.NodeVisitor):
 
@@ -125,36 +146,51 @@ class ComplianceScanner(ast.NodeVisitor):
         self.generic_visit(node)
 
 
+# ==========================================================
+# MAIN PIPELINE
+# ==========================================================
 
-def analyze_single_file(file_path: str, metadata: Dict):
+def analyze_single_file(file_path: str, contract_id: int):
 
     yield "Scanning Python file...\n"
 
-    with open(file_path,"r",encoding="utf-8") as f:
-        code = f.read()
+    try:
 
-    tree = ast.parse(code)
+        with open(file_path, "r", encoding="utf-8") as f:
+            code = f.read()
+
+        tree = ast.parse(code)
+
+    except Exception as e:
+
+        yield f"Failed to parse Python file: {str(e)}\n"
+
+        yield json.dumps({
+            "type": "violations",
+            "violations": [],
+            "safe": False
+        }) + "\n"
+
+        return
+
 
     scanner = ComplianceScanner(code)
     scanner.visit(tree)
 
     if not scanner.blocks_for_review:
 
-        yield "No suspicious blocks detected\n"
-
         yield json.dumps({
-            "type":"violations",
-            "violations":[],
-            "safe":True
+            "type": "violations",
+            "violations": [],
+            "safe": True
         }) + "\n"
 
         return
 
 
-    yield "Evaluating detected blocks...\n"
-
     repo = RuleRepository()
-    rules = repo.fetch_all_rules()
+    rules = repo.fetch_rules_by_document(contract_id)
+    repo.close()
 
     llm = AzureLLMService()
 
@@ -162,33 +198,35 @@ def analyze_single_file(file_path: str, metadata: Dict):
 
     for block in scanner.blocks_for_review:
 
-        result = llm.evaluate_block(block["code"],rules)
+        try:
 
-        violations = result.get("violations",[])
+            result = llm.evaluate_block(block["code"], rules)
 
-        for v in violations:
+            violations = result.get("violations", [])
+
+            for v in violations:
+
+                violations_list.append({
+                    "rule_id": v["rule_id"],
+                    "title": v["title"],
+                    "reason": v["reason"],
+                    "scope": block["scope"],
+                    "function": block["name"]
+                })
+
+        except Exception as e:
 
             violations_list.append({
-                "rule_id":v["rule_id"],
-                "title":v["title"],
-                "reason":v["reason"],
-                "scope":block["scope"],
-                "function":block["name"]
+                "rule_id": "SYSTEM",
+                "title": "LLM evaluation error",
+                "reason": str(e),
+                "scope": block["scope"],
+                "function": block["name"]
             })
 
 
-    if len(violations_list) == 0:
-
-        yield json.dumps({
-            "type":"violations",
-            "violations":[],
-            "safe":True
-        }) + "\n"
-
-    else:
-
-        yield json.dumps({
-            "type":"violations",
-            "violations":violations_list,
-            "safe":False
-        }) + "\n"
+    yield json.dumps({
+        "type": "violations",
+        "violations": violations_list,
+        "safe": len(violations_list) == 0
+    }) + "\n"

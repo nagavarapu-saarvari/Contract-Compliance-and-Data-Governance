@@ -8,6 +8,7 @@ from langchain_docling import DoclingLoader
 
 load_dotenv()
 
+
 # ==========================================================
 # LLM SERVICE
 # ==========================================================
@@ -48,7 +49,6 @@ class ParsePDFTool:
     def execute(self, file_path: str) -> str:
 
         loader = DoclingLoader(file_path)
-
         documents = loader.load()
 
         return "".join(doc.page_content for doc in documents)
@@ -125,24 +125,21 @@ class RuleRepository:
             password=os.getenv("DB_PASSWORD")
         )
 
-        self._initialize()
-
-    def _initialize(self):
+    def get_rules_by_document(self, document_id: int) -> List[Dict]:
 
         with self.conn.cursor() as cursor:
 
             cursor.execute("""
-            CREATE TABLE IF NOT EXISTS rules (
-                id SERIAL PRIMARY KEY,
-                document_name TEXT,
-                pdf_file BYTEA,
-                rule_id TEXT,
-                rule_json JSONB,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            );
-            """)
+            SELECT rule_json
+            FROM rules
+            WHERE document_id = %s
+            ORDER BY id
+            """, (document_id,))
 
-            self.conn.commit()
+            rows = cursor.fetchall()
+
+        return [row[0] for row in rows]
+
 
     def store(self, rules: List[Dict], document_id: int):
 
@@ -153,14 +150,19 @@ class RuleRepository:
                 cursor.execute("""
                 INSERT INTO rules (document_id, rule_id, rule_json)
                 VALUES (%s, %s, %s)
+                ON CONFLICT (document_id, rule_id) DO NOTHING
                 """,
                 (
-                document_id,
-                rule.get("rule_id"),
-                json.dumps(rule)
+                    document_id,
+                    rule.get("rule_id"),
+                    json.dumps(rule)
                 ))
 
         self.conn.commit()
+
+
+    def close(self):
+        self.conn.close()
 
 
 # ==========================================================
@@ -176,13 +178,22 @@ class RuleGenerationAgent:
         self.policy_tool = PolicyCompilationTool(self.llm)
         self.repository = RuleRepository()
 
+
     def process_contract(self, pdf_path: str, document_id: int):
+
+        existing_rules = self.repository.get_rules_by_document(document_id)
+
+        if existing_rules:
+            self.repository.close()
+            return existing_rules
 
         contract_text = self.parse_tool.execute(pdf_path)
 
         rules = self.policy_tool.execute(contract_text)
 
-        inserted_rows = self.repository.store(rules, document_id)
+        self.repository.store(rules, document_id)
+
+        self.repository.close()
 
         return rules
 
@@ -191,7 +202,7 @@ class RuleGenerationAgent:
 # PUBLIC FUNCTION
 # ==========================================================
 
-def generate_rules_from_pdf(pdf_path: str, document_id: str):
+def generate_rules_from_pdf(pdf_path: str, document_id: int):
 
     agent = RuleGenerationAgent()
 

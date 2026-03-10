@@ -11,7 +11,7 @@ import { getDocuments } from "./services/api";
 function App() {
 
   const [documents, setDocuments] = useState([]);
-  const [selectedDoc, setSelectedDoc] = useState(null);
+  const [selectedDoc, setSelectedDoc] = useState([]);
 
   const loadDocuments = async () => {
     const res = await getDocuments();
@@ -23,13 +23,15 @@ function App() {
   }, []);
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-50 to-primary-50">
+    <div className="h-screen overflow-hidden bg-slate-50">
+
       {/* NAVBAR */}
       <Navbar />
 
-      <div className="flex h-[calc(100vh-64px)]">
+      <div className="flex h-screen pt-16">
+
         {/* SIDEBAR */}
-        <div className="w-80 border-r border-slate-200 bg-white overflow-y-auto p-6 space-y-6 shadow-sm">
+        <div className="w-80 border-r border-primary-100 bg-primary-100 overflow-y-auto p-6 space-y-6">
 
           <ModelSelector />
 
@@ -44,8 +46,8 @@ function App() {
         </div>
 
         {/* MAIN CONTENT */}
-        <div className="flex-1 overflow-hidden bg-white">
-          <PromptPanel selectedDoc={selectedDoc} />
+        <div className="flex-1 overflow-hidden bg-primary-700">
+          <PromptPanel selectedDoc={selectedDoc} documents={documents} />
         </div>
 
       </div>

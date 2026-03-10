@@ -4,14 +4,13 @@ import json
 import tempfile
 import psycopg2
 
+from openai import AzureOpenAI
 from pathlib import Path
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
-
 from dotenv import load_dotenv
-from psycopg2.errors import UniqueViolation
 
 from rule_generation import generate_rules_from_pdf
 from rule_check import analyze_single_file
@@ -50,6 +49,54 @@ def get_connection():
 
 
 # ==========================================================
+# LLM INTENT CLASSIFIER
+# ==========================================================
+
+class IntentClassifier:
+
+    def __init__(self):
+
+        self.client = AzureOpenAI(
+            api_key=os.getenv("AZURE_OPENAI_API_KEY"),
+            azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT"),
+            api_version=os.getenv("AZURE_OPENAI_API_VERSION"),
+        )
+
+        self.deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT")
+
+
+    def classify(self, prompt: str):
+
+        system_prompt = """
+        You are an intent classification system.
+
+        Classify the user request into ONE of these intents:
+
+        generate_rules
+        check_compliance
+        unknown
+
+        Rules:
+        - generate_rules → user wants governance rules from a contract
+        - check_compliance → user wants to scan Python code for rule violations
+        - unknown → anything else
+
+        Return ONLY the intent label.
+        """
+
+        response = self.client.chat.completions.create(
+            model=self.deployment,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0
+        )
+
+        return response.choices[0].message.content.strip().lower()
+
+
+# ==========================================================
 # FILE UPLOAD
 # ==========================================================
 
@@ -69,7 +116,6 @@ async def upload_file(file: UploadFile = File(...)):
     conn = get_connection()
     cursor = conn.cursor()
 
-    # check duplicate filename
     cursor.execute(
         "SELECT id FROM documents WHERE filename = %s",
         (filename,)
@@ -95,6 +141,7 @@ async def upload_file(file: UploadFile = File(...)):
         document_id = cursor.fetchone()[0]
         conn.commit()
         conn.close()
+
     file_type = "pdf" if filename.endswith(".pdf") else "python"
 
     return {
@@ -102,6 +149,7 @@ async def upload_file(file: UploadFile = File(...)):
         "message": "File uploaded successfully",
         "document_id": document_id
     }
+
 
 # ==========================================================
 # LIST DOCUMENTS
@@ -226,24 +274,37 @@ def generate_rules(doc_id: int):
 # COMPLIANCE CHECK
 # ==========================================================
 
-@app.post("/check_compliance/{doc_id}")
-def check_compliance(doc_id: int):
+@app.post("/check_compliance")
+async def check_compliance(request: Request):
+
+    body = await request.json()
+
+    contract_id = body.get("contract_id")
+    python_id = body.get("python_id")
+
+    if not contract_id or not python_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Both contract_id and python_id are required"
+        )
 
     def stream():
 
         conn = get_connection()
 
         with conn.cursor() as cursor:
+
             cursor.execute(
                 "SELECT filename, file_data FROM documents WHERE id=%s",
-                (doc_id,)
+                (python_id,)
             )
+
             row = cursor.fetchone()
 
         conn.close()
 
         if not row:
-            yield "Document not found\n"
+            yield "Python file not found\n"
             return
 
         filename, file_data = row
@@ -255,6 +316,7 @@ def check_compliance(doc_id: int):
         yield "Preparing Python file...\n"
 
         with tempfile.NamedTemporaryFile(delete=False, suffix=".py") as temp_file:
+
             temp_file.write(file_data)
             temp_path = temp_file.name
 
@@ -267,7 +329,7 @@ def check_compliance(doc_id: int):
 
             yield "Running compliance scanner...\n"
 
-            for message in analyze_single_file(temp_path, metadata):
+            for message in analyze_single_file(temp_path, contract_id):
                 yield message
 
         finally:
@@ -275,6 +337,103 @@ def check_compliance(doc_id: int):
             os.remove(temp_path)
 
     return StreamingResponse(stream(), media_type="text/plain")
+
+
+# ==========================================================
+# PROMPT ROUTER (LLM + CONTRACT + PYTHON)
+# ==========================================================
+
+@app.post("/process_prompt")
+async def process_prompt(request: Request):
+
+    classifier = IntentClassifier()
+
+    body = await request.json()
+
+    prompt = body.get("prompt", "")
+    contract_id = body.get("contract_id")
+    python_id = body.get("python_id")
+
+    intent = classifier.classify(prompt)
+
+    if intent == "generate_rules":
+
+        if not contract_id:
+            return StreamingResponse(
+                iter(["Please select a contract PDF file\n"]),
+                media_type="text/plain"
+            )
+
+        return generate_rules(contract_id)
+
+
+    if intent == "check_compliance":
+
+        if not contract_id or not python_id:
+            return StreamingResponse(
+                iter(["Please select both a contract and Python file\n"]),
+                media_type="text/plain"
+            )
+
+        def stream():
+
+            conn = get_connection()
+
+            with conn.cursor() as cursor:
+
+                cursor.execute(
+                    "SELECT file_data FROM documents WHERE id=%s",
+                    (contract_id,)
+                )
+                contract_data = cursor.fetchone()[0]
+
+                cursor.execute(
+                    "SELECT file_data FROM documents WHERE id=%s",
+                    (python_id,)
+                )
+                python_data = cursor.fetchone()[0]
+
+            conn.close()
+
+            yield "Parsing contract...\n"
+
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp_pdf:
+
+                temp_pdf.write(contract_data)
+                contract_path = temp_pdf.name
+
+            yield "Generating governance rules...\n"
+
+            rules = generate_rules_from_pdf(contract_path, contract_id)
+
+            os.remove(contract_path)
+
+            yield "Preparing Python file...\n"
+
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".py") as temp_py:
+
+                temp_py.write(python_data)
+                python_path = temp_py.name
+
+            try:
+
+                yield "Checking compliance using contract rules...\n"
+
+                for message in analyze_single_file(python_path, contract_id):
+                    yield message
+
+            finally:
+
+                os.remove(python_path)
+
+        return StreamingResponse(stream(), media_type="text/plain")
+
+
+    return StreamingResponse(
+        iter(["Unable to determine request intent from prompt\n"]),
+        media_type="text/plain"
+    )
+
 
 # ==========================================================
 # SERVE FRONTEND
