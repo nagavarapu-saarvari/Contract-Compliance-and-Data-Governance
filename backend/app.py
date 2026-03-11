@@ -430,7 +430,7 @@ async def process_prompt(request: Request):
 
 
     return StreamingResponse(
-        iter(["Unable to determine request intent from prompt\n"]),
+        iter(["Invalid request\n"]),
         media_type="text/plain"
     )
 

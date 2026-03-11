@@ -2,7 +2,6 @@ import React, { useState, useEffect, useRef } from "react";
 import { Card, CardContent } from "./ui/card";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
-import {toast} from "sonner";
 import {
   Table,
   TableBody,
@@ -147,7 +146,10 @@ function PromptPanel({ selectedDoc, documents }) {
     const selectedDocs = Array.isArray(selectedDoc) ? selectedDoc : [];
 
     if (selectedDocs.length === 0) {
-      toast.warning("Please select a contract PDF.");
+      setMessages(prev => [
+        ...prev,
+        { role: "assistant", content: "Please select a document." }
+      ]);
       return;
     }
 
@@ -155,11 +157,11 @@ function PromptPanel({ selectedDoc, documents }) {
       selectedDocs.includes(doc.id)
     );
 
-    const pdfFiles = selectedDocuments.filter(doc =>
+    const pdfFile = selectedDocuments.find(doc =>
       doc.filename.endsWith(".pdf")
     );
 
-    const pyFiles = selectedDocuments.filter(doc =>
+    const pyFile = selectedDocuments.find(doc =>
       doc.filename.endsWith(".py")
     );
 
@@ -185,56 +187,14 @@ function PromptPanel({ selectedDoc, documents }) {
 
     try {
 
-      // ==========================
-      // CASE 1 → GENERATE RULES
-      // ==========================
-
-      if (pdfFiles.length === 1 && pyFiles.length === 0) {
-
-        const contractId = pdfFiles[0].id;
-
-        await streamResponse(
-          `http://localhost:8001/generate_rules/${contractId}`
-        );
-
-      }
-
-      // ==========================
-      // CASE 2 → CHECK COMPLIANCE
-      // ==========================
-
-      else if (pdfFiles.length === 1 && pyFiles.length === 1) {
-
-        const contractId = pdfFiles[0].id;
-        const pythonId = pyFiles[0].id;
-
-        await streamResponse(
-          "http://localhost:8001/check_compliance",
-          {
-            contract_id: contractId,
-            python_id: pythonId
-          }
-        );
-
-      }
-
-      // ==========================
-      // INVALID CASE
-      // ==========================
-
-      else {
-
-        setMessages(prev => {
-          const updated = [...prev];
-          updated[updated.length - 1] = {
-            role: "assistant",
-            content:
-              "Please select exactly:\n• One PDF to generate rules\n• One PDF + one Python file to check compliance"
-          };
-          return updated;
-        });
-
-      }
+      await streamResponse(
+        "http://localhost:8001/process_prompt",
+        {
+          prompt: prompt,
+          contract_id: pdfFile ? pdfFile.id : null,
+          python_id: pyFile ? pyFile.id : null
+        }
+      );
 
     } catch (error) {
 
