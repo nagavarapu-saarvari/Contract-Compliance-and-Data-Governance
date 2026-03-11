@@ -3,63 +3,87 @@ import { uploadFile } from "../services/api";
 import { Card, CardContent, CardHeader, CardTitle } from "./ui/card";
 import { Button } from "./ui/button";
 import { Upload, AlertCircle } from "lucide-react";
+import { toast } from "sonner";
 
 function FileUpload({ refreshDocs }) {
+
   const [file, setFile] = useState(null);
   const [dragging, setDragging] = useState(false);
   const fileInputRef = useRef(null);
 
   const clearFile = () => {
     setFile(null);
+
     if (fileInputRef.current) {
       fileInputRef.current.value = "";
     }
   };
 
   const uploadSelectedFile = async (selectedFile) => {
+
     try {
+
       const fileName = selectedFile.name.toLowerCase();
 
       if (!fileName.endsWith(".pdf") && !fileName.endsWith(".py")) {
-        alert("Unsupported file type. Please upload a PDF or .py file.");
+        toast.error("Unsupported file type. Please upload a PDF or .py file.");
         return;
       }
 
       await uploadFile(selectedFile);
 
-      alert("File uploaded successfully");
+      toast.success("File uploaded successfully");
+
+      refreshDocs();
+
+    } catch (error) {
+
+      if (error.response && error.response.data) {
+        toast.error(error.response.data.detail);
+      } else {
+        toast.error("File upload failed");
+      }
+
+    } finally {
 
       clearFile();
-    } catch (error) {
-      if (error.response && error.response.data) {
-        alert(error.response.data.detail);
-      } else {
-        alert("File upload failed");
-      }
+
     }
-    finally { clearFile(); }
+
   };
 
+
   const handleUpload = async () => {
+
     if (!file) return;
 
     try {
+
       await uploadFile(file);
 
-      alert("File uploaded successfully");
+      toast.success("File uploaded successfully");
 
       refreshDocs();
+
     } catch (error) {
+
       if (error.response && error.response.data) {
-        alert(error.response.data.detail);
+        toast.error(error.response.data.detail);
       } else {
-        alert("File upload failed");
+        toast.error("File upload failed");
       }
+
+    } finally {
+
+      clearFile();
+
     }
-    finally { clearFile(); }
+
   };
 
+
   const handleDrop = (e) => {
+
     e.preventDefault();
     setDragging(false);
 
@@ -70,15 +94,18 @@ function FileUpload({ refreshDocs }) {
     const fileName = droppedFile.name.toLowerCase();
 
     if (!fileName.endsWith(".pdf") && !fileName.endsWith(".py")) {
-      alert("Unsupported file type. Please upload a PDF or .py file.");
+      toast.error("Unsupported file type. Please upload a PDF or .py file.");
       return;
     }
 
     setFile(droppedFile);
   };
 
+
   return (
+
     <Card className="border-l-4 border-l-primary-400">
+
       <CardHeader className="pb-3">
         <div className="flex items-center gap-2">
           <Upload className="h-5 w-5 text-primary-400" />
@@ -104,12 +131,14 @@ function FileUpload({ refreshDocs }) {
             type="file"
             accept=".pdf,.py"
             onChange={(e) => {
+
               const selected = e.target.files[0];
 
               if (selected) {
                 setFile(selected);
                 uploadSelectedFile(selected); // auto upload
               }
+
             }}
             className="hidden"
             id="file-input"
@@ -130,7 +159,9 @@ function FileUpload({ refreshDocs }) {
                   : "border-primary-300 hover:bg-primary-50"
               }`}
           >
+
             <div className="text-center">
+
               <Upload className="h-6 w-6 text-primary-400 mx-auto mb-2" />
 
               <p className="text-sm font-medium text-slate-700">
@@ -140,8 +171,11 @@ function FileUpload({ refreshDocs }) {
               <p className="text-xs text-slate-500 mt-1">
                 or drag and drop
               </p>
+
             </div>
+
           </label>
+
         </div>
 
         {/* Upload Button (for drag-drop files) */}
@@ -154,7 +188,9 @@ function FileUpload({ refreshDocs }) {
         </Button>
 
       </CardContent>
+
     </Card>
+
   );
 }
 

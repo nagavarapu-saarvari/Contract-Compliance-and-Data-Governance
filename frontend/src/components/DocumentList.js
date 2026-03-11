@@ -1,10 +1,10 @@
 import React from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "./ui/card";
 import { FileText } from "lucide-react";
+import { toast } from "sonner";
 
 function DocumentList({ documents, selectedDoc, setSelectedDoc }) {
 
-  // Ensure selectedDoc is always an array
   const selectedDocs = Array.isArray(selectedDoc) ? selectedDoc : [];
 
   const handleSelection = (doc) => {
@@ -18,7 +18,7 @@ function DocumentList({ documents, selectedDoc, setSelectedDoc }) {
 
     // Limit selection to 2
     if (selectedDocs.length >= 2) {
-      alert("You can only select one PDF contract and one Python file.");
+      toast.error("You can only select one PDF contract and one Python file.");
       return;
     }
 
@@ -28,12 +28,12 @@ function DocumentList({ documents, selectedDoc, setSelectedDoc }) {
     const hasPY = currentDocs.some(d => d.filename.endsWith(".py"));
 
     if (doc.filename.endsWith(".pdf") && hasPDF) {
-      alert("Only one contract PDF can be selected.");
+      toast.warning("Only one contract PDF can be selected.");
       return;
     }
 
     if (doc.filename.endsWith(".py") && hasPY) {
-      alert("Only one Python file can be selected.");
+      toast.warning("Only one Python file can be selected.");
       return;
     }
 

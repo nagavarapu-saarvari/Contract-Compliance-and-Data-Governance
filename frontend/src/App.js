@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-
+import {Toaster} from "sonner";
 import Navbar from "./components/Navbar";
 import ModelSelector from "./components/ModelSelector";
 import FileUpload from "./components/FileUpload";
@@ -24,7 +24,7 @@ function App() {
 
   return (
     <div className="h-screen overflow-hidden bg-slate-50">
-
+      <Toaster richColors position="top-right" />
       {/* NAVBAR */}
       <Navbar />
 

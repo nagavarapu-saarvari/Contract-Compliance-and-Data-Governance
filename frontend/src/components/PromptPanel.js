@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from "react";
 import { Card, CardContent } from "./ui/card";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
+import {toast} from "sonner";
 import {
   Table,
   TableBody,
@@ -146,7 +147,7 @@ function PromptPanel({ selectedDoc, documents }) {
     const selectedDocs = Array.isArray(selectedDoc) ? selectedDoc : [];
 
     if (selectedDocs.length === 0) {
-      alert("Please select a contract PDF.");
+      toast.warning("Please select a contract PDF.");
       return;
     }
 
