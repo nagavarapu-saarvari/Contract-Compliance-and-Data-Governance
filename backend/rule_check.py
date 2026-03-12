@@ -1,32 +1,152 @@
 import ast
 import json
 import os
+import re
 import psycopg2
-from typing import Dict, List
 from dotenv import load_dotenv
 from openai import AzureOpenAI
 
 load_dotenv()
 
+# ==========================================================
+# RULE REPOSITORY
+# ==========================================================
+
 class RuleRepository:
 
     def __init__(self):
+
         self.conn = psycopg2.connect(
-            host=os.getenv("DB_HOST"),
-            port=os.getenv("DB_PORT"),
+            host=os.getenv("DB_HOST", "localhost"),
+            port=os.getenv("DB_PORT", "5432"),
             dbname=os.getenv("DB_NAME"),
             user=os.getenv("DB_USER"),
             password=os.getenv("DB_PASSWORD")
         )
 
-    def fetch_all_rules(self):
+    def fetch_rules_by_document(self, document_id):
 
         with self.conn.cursor() as cursor:
-            cursor.execute("SELECT rule_json FROM rules")
+
+            cursor.execute(
+                "SELECT rule_json FROM rules WHERE document_id=%s",
+                (document_id,)
+            )
+
             rows = cursor.fetchall()
 
         return [row[0] for row in rows]
 
+    def close(self):
+        self.conn.close()
+
+
+# ==========================================================
+# DATABASE METADATA EXTRACTION
+# ==========================================================
+
+def extract_db_metadata():
+
+    conn = psycopg2.connect(
+        host=os.getenv("DB_HOST"),
+        port=os.getenv("DB_PORT"),
+        dbname=os.getenv("DATA_DB"),
+        user=os.getenv("DB_USER"),
+        password=os.getenv("DB_PASSWORD")
+    )
+
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT table_name, column_name
+        FROM information_schema.columns
+        WHERE table_schema='public'
+    """)
+
+    rows = cursor.fetchall()
+
+    cursor.close()
+    conn.close()
+
+    metadata = {}
+
+    for table, column in rows:
+
+        if table not in metadata:
+            metadata[table] = []
+
+        metadata[table].append(column)
+
+    return metadata
+
+
+# ==========================================================
+# REGEX RULES
+# ==========================================================
+
+SQL_PATTERNS = [
+    r"\bSELECT\b",
+    r"\bINSERT\b",
+    r"\bUPDATE\b",
+    r"\bDELETE\b",
+    r"\bJOIN\b"
+]
+
+EXTERNAL_ROUTE_PATTERNS = [
+    r"requests\.(get|post|put|delete)",
+    r"http[s]?://",
+    r"fetch\(",
+    r"axios\."
+]
+
+
+# ==========================================================
+# REGEX DETECTOR
+# ==========================================================
+
+def detect_risky_patterns(code_block, metadata):
+
+    findings = []
+
+    # Detect SQL operations
+    for pattern in SQL_PATTERNS:
+
+        if re.search(pattern, code_block, re.IGNORECASE):
+
+            findings.append({
+                "type": "sql_operation",
+                "pattern": pattern
+            })
+
+    # Detect external API calls
+    for pattern in EXTERNAL_ROUTE_PATTERNS:
+
+        if re.search(pattern, code_block):
+
+            findings.append({
+                "type": "external_api",
+                "pattern": pattern
+            })
+
+    # Detect usage of sensitive columns
+    for table, columns in metadata.items():
+
+        for column in columns:
+
+            if re.search(rf"\b{column}\b", code_block):
+
+                findings.append({
+                    "type": "sensitive_field",
+                    "table": table,
+                    "column": column
+                })
+
+    return findings
+
+
+# ==========================================================
+# LLM SERVICE
+# ==========================================================
 
 class AzureLLMService:
 
@@ -76,15 +196,19 @@ Code:
         response = self.client.chat.completions.create(
             model=self.deployment,
             messages=[
-                {"role":"system","content":system_prompt},
-                {"role":"user","content":user_prompt}
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
             ],
-            response_format={"type":"json_object"},
+            response_format={"type": "json_object"},
             temperature=0
         )
 
         return json.loads(response.choices[0].message.content)
 
+
+# ==========================================================
+# AST COMPLIANCE SCANNER
+# ==========================================================
 
 class ComplianceScanner(ast.NodeVisitor):
 
@@ -125,36 +249,54 @@ class ComplianceScanner(ast.NodeVisitor):
         self.generic_visit(node)
 
 
+# ==========================================================
+# MAIN ANALYSIS PIPELINE
+# ==========================================================
 
-def analyze_single_file(file_path: str, metadata: Dict):
+def analyze_single_file(file_path: str, contract_id: int):
 
     yield "Scanning Python file...\n"
 
-    with open(file_path,"r",encoding="utf-8") as f:
-        code = f.read()
+    try:
 
-    tree = ast.parse(code)
+        with open(file_path, "r", encoding="utf-8") as f:
+            code = f.read()
+
+        tree = ast.parse(code)
+
+    except Exception as e:
+
+        yield f"Failed to parse Python file: {str(e)}\n"
+
+        yield json.dumps({
+            "type": "violations",
+            "violations": [],
+            "safe": False
+        }) + "\n"
+
+        return
+
 
     scanner = ComplianceScanner(code)
     scanner.visit(tree)
 
     if not scanner.blocks_for_review:
 
-        yield "No suspicious blocks detected\n"
-
         yield json.dumps({
-            "type":"violations",
-            "violations":[],
-            "safe":True
+            "type": "violations",
+            "violations": [],
+            "safe": True
         }) + "\n"
 
         return
 
 
-    yield "Evaluating detected blocks...\n"
+    # Extract DB metadata
+    metadata = extract_db_metadata()
 
     repo = RuleRepository()
-    rules = repo.fetch_all_rules()
+    rules = repo.fetch_rules_by_document(contract_id)
+    repo.close()
 
     llm = AzureLLMService()
 
@@ -162,33 +304,51 @@ def analyze_single_file(file_path: str, metadata: Dict):
 
     for block in scanner.blocks_for_review:
 
-        result = llm.evaluate_block(block["code"],rules)
+        code_block = block["code"]
 
-        violations = result.get("violations",[])
+        regex_findings = detect_risky_patterns(code_block, metadata)
 
-        for v in violations:
+        if not regex_findings:
+            continue
+
+        try:
+
+            result = llm.evaluate_block(
+                f"""
+Code Block:
+{code_block}
+
+Detected Patterns:
+{json.dumps(regex_findings, indent=2)}
+""",
+                rules
+            )
+
+            violations = result.get("violations", [])
+
+            for v in violations:
+
+                violations_list.append({
+                    "rule_id": v["rule_id"],
+                    "title": v["title"],
+                    "reason": v["reason"],
+                    "scope": block["scope"],
+                    "function": block["name"]
+                })
+
+        except Exception as e:
 
             violations_list.append({
-                "rule_id":v["rule_id"],
-                "title":v["title"],
-                "reason":v["reason"],
-                "scope":block["scope"],
-                "function":block["name"]
+                "rule_id": "SYSTEM",
+                "title": "LLM evaluation error",
+                "reason": str(e),
+                "scope": block["scope"],
+                "function": block["name"]
             })
 
 
-    if len(violations_list) == 0:
-
-        yield json.dumps({
-            "type":"violations",
-            "violations":[],
-            "safe":True
-        }) + "\n"
-
-    else:
-
-        yield json.dumps({
-            "type":"violations",
-            "violations":violations_list,
-            "safe":False
-        }) + "\n"
+    yield json.dumps({
+        "type": "violations",
+        "violations": violations_list,
+        "safe": len(violations_list) == 0
+    }) + "\n"

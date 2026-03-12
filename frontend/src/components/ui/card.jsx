@@ -7,7 +7,7 @@ const Card = React.forwardRef(
     <div
       ref={ref}
       className={cn(
-        "rounded-lg border border-slate-200 bg-white text-slate-950 shadow-sm",
+        "rounded-lg border border-primary-100 bg-white text-slate-900 shadow-sm hover:shadow-md transition-shadow",
         className
       )}
       {...props}
@@ -27,26 +27,27 @@ const CardHeader = React.forwardRef(
 )
 CardHeader.displayName = "CardHeader"
 
-// eslint-disable-next-line jsx-a11y/heading-has-content
 const CardTitle = React.forwardRef(
-  ({ className, ...props }, ref) => (
+  ({ className, children, ...props }, ref) => (
     <h2
       ref={ref}
       className={cn(
-        "text-2xl font-semibold leading-none tracking-tight text-primary-700",
+        "text-xl font-semibold leading-none tracking-tight text-primary-400",
         className
       )}
       {...props}
-    />
+    >
+      {children}
+    </h2>
   )
-)
+);
 CardTitle.displayName = "CardTitle"
 
 const CardDescription = React.forwardRef(
   ({ className, ...props }, ref) => (
     <p
       ref={ref}
-      className={cn("text-sm text-slate-600", className)}
+      className={cn("text-sm text-primary-700", className)}
       {...props}
     />
   )
@@ -55,7 +56,11 @@ CardDescription.displayName = "CardDescription"
 
 const CardContent = React.forwardRef(
   ({ className, ...props }, ref) => (
-    <div ref={ref} className={cn("p-6 pt-0", className)} {...props} />
+    <div
+      ref={ref}
+      className={cn("p-6 pt-0 text-slate-700", className)}
+      {...props}
+    />
   )
 )
 CardContent.displayName = "CardContent"
