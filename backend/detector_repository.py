@@ -23,22 +23,33 @@ class DetectorRepository:
         with self.conn.cursor() as cur:
 
             cur.execute(
-                "SELECT detectors_json FROM detectors WHERE document_id=%s",
+                "SELECT detector_json FROM detectors WHERE document_id=%s",
                 (document_id,)
             )
 
             rows = cur.fetchall()
 
         detectors = []
+
         for row in rows:
+
             data = row[0]
-            if isinstance(data, list):
-                detectors.extend(data)
-            else:
-                detectors.append(data)
+
+            if isinstance(data, str):
+                data = json.loads(data)
+
+            detectors.append(data)
+
         return detectors
 
+
     def store_detectors(self, document_id, detectors):
+
+        print("Storing detectors:", detectors)
+
+        if not detectors:
+            print("No detectors generated. Nothing stored.")
+            return
 
         with self.conn.cursor() as cur:
 
@@ -51,12 +62,14 @@ class DetectorRepository:
                     """,
                     (
                         document_id,
-                        d["rule_id"],
+                        d.get("rule_id"),
                         json.dumps(d)
                     )
                 )
 
         self.conn.commit()
+
+        print("Detectors successfully stored.")
 
     def close(self):
         self.conn.close()

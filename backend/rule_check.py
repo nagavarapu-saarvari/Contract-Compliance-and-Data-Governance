@@ -1,7 +1,8 @@
 import ast
 import json
-import os
 import re
+import os
+
 from dotenv import load_dotenv
 from openai import AzureOpenAI
 
@@ -20,12 +21,13 @@ class ComplianceScanner(ast.NodeVisitor):
     def __init__(self, source):
 
         self.lines = source.split("\n")
+
         self.blocks = []
 
     def visit_FunctionDef(self, node):
 
         code = "\n".join(
-            self.lines[node.lineno-1:node.end_lineno]
+            self.lines[node.lineno - 1:node.end_lineno]
         )
 
         self.blocks.append({
@@ -54,7 +56,7 @@ class AzureLLMService:
 
 
 # ----------------------------------------------------------
-# DETECTOR MATCH
+# REGEX DETECTOR
 # ----------------------------------------------------------
 
 def detect_patterns(code, detectors):
@@ -63,11 +65,15 @@ def detect_patterns(code, detectors):
 
     for d in detectors:
 
-        for pattern in d.get("regex", []):
+        patterns = d.get("regex", [])
+
+        for pattern in patterns:
 
             try:
 
-                if re.search(pattern, code, re.IGNORECASE):
+                compiled = re.compile(pattern, re.IGNORECASE)
+
+                if compiled.search(code):
 
                     findings.append({
                         "rule_id": d.get("rule_id"),
@@ -79,26 +85,6 @@ def detect_patterns(code, detectors):
                 continue
 
     return findings
-
-
-# ----------------------------------------------------------
-# CONTEXT EXTRACTION
-# ----------------------------------------------------------
-
-def extract_context(code, pattern):
-
-    lines = code.split("\n")
-
-    for i, line in enumerate(lines):
-
-        if re.search(pattern, line, re.IGNORECASE):
-
-            start = max(0, i-2)
-            end = min(len(lines), i+3)
-
-            return "\n".join(lines[start:end])
-
-    return code[:200]
 
 
 # ----------------------------------------------------------
@@ -115,24 +101,32 @@ def analyze_single_file(path, document_id):
     tree = ast.parse(code)
 
     scanner = ComplianceScanner(code)
+
     scanner.visit(tree)
 
+    print("Functions detected:", len(scanner.blocks))
+
     repo = RuleRepository()
+
     rules = repo.get_rules_by_document(document_id)
+
     repo.close()
 
+    if not rules:
+        yield "No governance rules found\n"
+        return
+
     drepo = DetectorRepository()
-    raw_detectors = drepo.get_detectors(document_id)
 
-    detectors = []
-
-    for row in raw_detectors:
-        if isinstance(row, list):
-            detectors.extend(row)
-        else:
-            detectors.append(row)
+    detectors = drepo.get_detectors(document_id)
 
     drepo.close()
+
+    print("Detectors loaded:", len(detectors))
+
+    if not detectors:
+        yield "No detectors found for this contract\n"
+        return
 
     suspicious = []
 
@@ -142,41 +136,33 @@ def analyze_single_file(path, document_id):
 
         if findings:
 
-            
-
             suspicious.append({
                 "function": block["name"],
-    "code": block["code"],
-    "findings": findings
+                "code": block["code"],
+                "findings": findings
             })
+
+    print("Suspicious blocks:", len(suspicious))
 
     if not suspicious:
 
         yield json.dumps({
-             "type": "violations",
+            "type": "violations",
             "violations": [],
             "safe": True
         }) + "\n"
 
         return
 
-    suspicious = suspicious[:5]
+    # ----------------------------------------------------------
+    # BATCH PROCESSING
+    # ----------------------------------------------------------
 
-    relevant_rules = rules
+    BATCH_SIZE = 5
 
-    blocks_text = ""
+    all_violations = []
 
-    for b in suspicious:
-
-        blocks_text += f"""
-FUNCTION: {b['function']}
-
-CODE:
-{b['code']}
-
-DETECTED PATTERNS:
-{json.dumps(b['findings'], indent=2)}
-"""
+    llm = AzureLLMService()
 
     system_prompt = """
 You are an enterprise governance compliance engine.
@@ -186,15 +172,21 @@ You will receive:
 2. Python code snippets
 3. Detected suspicious patterns
 
-For EACH function independently:
+Your task is to determine whether the code violates the rules.
 
-1. Check if the code violates any governance rule
-2. If it does, return the rule_id and title from the provided rules
-3. Multiple functions may violate multiple rules
+Important guidelines:
 
-IMPORTANT:
-- Only use rule_ids from the provided rules
-- Do not invent rules
+1. Only report violations when the prohibited action is clearly present.
+2. Do not speculate about possible misuse without evidence.
+3. Internal mathematical transformations or analytics are NOT violations.
+4. Internal logging or file writing is NOT a violation unless sensitive identifiers are exposed externally.
+5. However, DO flag violations when code clearly performs actions such as:
+   - exporting sensitive identifiers (SSN, patient_id, email, etc.)
+   - transmitting data to external APIs or third-party services
+   - joining or merging sensitive datasets
+   - linking operational data with patient or identity tables
+6. Use only the provided rule_ids.
+7. A function may violate multiple rules.
 
 Return JSON:
 
@@ -210,43 +202,62 @@ Return JSON:
 }
 """
 
-    user_prompt = f"""
+    for i in range(0, len(suspicious), BATCH_SIZE):
+
+        batch = suspicious[i:i+BATCH_SIZE]
+
+        blocks_text = ""
+
+        for b in batch:
+
+            blocks_text += f"""
+FUNCTION: {b['function']}
+
+CODE:
+{b['code'][:2000]}
+
+DETECTED PATTERNS:
+{json.dumps(b['findings'], indent=2)}
+"""
+
+        user_prompt = f"""
 Rules:
-{json.dumps(relevant_rules)}
+{json.dumps(rules)}
 
 Code snippets:
 {blocks_text}
 """
 
-    yield "Evaluating suspicious blocks with LLM...\n"
-    print("LLM request starting...")
+        yield f"Evaluating batch {i//BATCH_SIZE + 1}...\n"
 
-    llm = AzureLLMService()
+        response = llm.client.chat.completions.create(
+            model=llm.deployment,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            response_format={"type": "json_object"},
+            temperature=0
+        )
 
-    response = llm.client.chat.completions.create(
-        model=llm.deployment,
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt}
-        ],
-        response_format={"type": "json_object"},
-        temperature=0,
-        timeout=20
-    )
-    print("LLM response received")
+        raw = response.choices[0].message.content
 
-    content = response.choices[0].message.content
+        try:
 
-    print("RAW LLM RESPONSE:")
-    print(content)
+            result = json.loads(raw)
 
-    result = json.loads(content)
+            batch_violations = result.get("violations", [])
 
-    violations = result.get("violations", [])
+            all_violations.extend(batch_violations)
+
+        except json.JSONDecodeError:
+
+            print("Invalid JSON from LLM:", raw)
+
+            continue
 
     yield json.dumps({
-         "type": "violations",
-        "violations": violations,
-        "safe": len(violations) == 0
+        "type": "violations",
+        "violations": all_violations,
+        "safe": len(all_violations) == 0
     }) + "\n"
-    return

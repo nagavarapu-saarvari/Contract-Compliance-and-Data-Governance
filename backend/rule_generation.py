@@ -1,10 +1,12 @@
 import os
 import json
 import psycopg2
-from typing import List, Dict
 from dotenv import load_dotenv
 from openai import AzureOpenAI
 from langchain_docling import DoclingLoader
+
+from detector_generation import DetectorGenerationAgent
+from detector_repository import DetectorRepository
 
 load_dotenv()
 
@@ -25,7 +27,7 @@ class AzureLLMService:
 
         self.deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT")
 
-    def generate_json(self, system_prompt: str, user_prompt: str) -> Dict:
+    def generate_json(self, system_prompt, user_prompt):
 
         response = self.client.chat.completions.create(
             model=self.deployment,
@@ -37,7 +39,12 @@ class AzureLLMService:
             temperature=0
         )
 
-        return json.loads(response.choices[0].message.content)
+        raw = response.choices[0].message.content
+
+        print("LLM RAW RULE RESPONSE:")
+        print(raw)
+
+        return json.loads(raw)
 
 
 # ----------------------------------------------------------
@@ -46,12 +53,15 @@ class AzureLLMService:
 
 class ParsePDFTool:
 
-    def execute(self, file_path: str) -> str:
+    def execute(self, file_path):
 
         loader = DoclingLoader(file_path)
-        documents = loader.load()
 
-        return "".join(doc.page_content for doc in documents)
+        docs = loader.load()
+
+        text = "\n".join(doc.page_content for doc in docs)
+
+        return text
 
 
 # ----------------------------------------------------------
@@ -60,15 +70,17 @@ class ParsePDFTool:
 
 class PolicyCompilationTool:
 
-    def __init__(self, llm: AzureLLMService):
+    def __init__(self, llm):
+
         self.llm = llm
 
-    def execute(self, contract_text: str) -> List[Dict]:
+    def execute(self, contract_text):
 
         system_prompt = """
 You are a governance expert.
 
-Convert contract obligations into enforceable governance rules.
+Convert contract obligations into enforceable governance rules
+that can be validated against source code.
 
 Return JSON only.
 """
@@ -99,7 +111,7 @@ Contract:
 
 
 # ----------------------------------------------------------
-# DATABASE REPOSITORY
+# RULE DATABASE
 # ----------------------------------------------------------
 
 class RuleRepository:
@@ -114,7 +126,7 @@ class RuleRepository:
             password=os.getenv("DB_PASSWORD")
         )
 
-    def get_rules_by_document(self, document_id: int):
+    def get_rules_by_document(self, document_id):
 
         with self.conn.cursor() as cursor:
 
@@ -127,7 +139,7 @@ class RuleRepository:
 
         return [r[0] for r in rows]
 
-    def store(self, rules: List[Dict], document_id: int):
+    def store(self, rules, document_id):
 
         with self.conn.cursor() as cursor:
 
@@ -161,28 +173,133 @@ class RuleGenerationAgent:
     def __init__(self):
 
         self.llm = AzureLLMService()
+
         self.parser = ParsePDFTool()
+
         self.compiler = PolicyCompilationTool(self.llm)
+
         self.repo = RuleRepository()
 
     def process_contract(self, pdf_path, document_id):
 
-        existing = self.repo.get_rules_by_document(document_id)
+        # --------------------------------------------
+        # Check existing rules
+        # --------------------------------------------
 
-        if existing:
+        existing_rules = self.repo.get_rules_by_document(document_id)
+
+        if existing_rules:
+
+            print("Rules already exist for this contract.")
+
+            drepo = DetectorRepository()
+
+            detectors = drepo.get_detectors(document_id)
+
+            if detectors:
+                print("Detectors already exist:", len(detectors))
+
+                drepo.close()
+                self.repo.close()
+
+                return existing_rules
+
+            print("Rules exist but detectors missing. Generating detectors...")
+
+            detector_agent = DetectorGenerationAgent()
+
+            detectors = detector_agent.generate_detectors(existing_rules)
+
+            print("Generated detectors:", detectors)
+
+            if detectors:
+
+                drepo.store_detectors(document_id, detectors)
+
+                print("Detectors stored:", len(detectors))
+
+            else:
+
+                print("No detectors generated!")
+
+            drepo.close()
             self.repo.close()
-            return existing
 
-        text = self.parser.execute(pdf_path)
+            return existing_rules
 
-        rules = self.compiler.execute(text)
+
+        # --------------------------------------------
+        # No rules exist → generate rules
+        # --------------------------------------------
+
+        print("Parsing contract...")
+
+        contract_text = self.parser.execute(pdf_path)
+
+        print("Generating governance rules...")
+
+        rules = self.compiler.execute(contract_text)
+
+        print("Generated rules:", rules)
+
+        if not rules:
+
+            print("No rules generated!")
+
+            self.repo.close()
+
+            return []
+
+
+        # --------------------------------------------
+        # Store rules
+        # --------------------------------------------
 
         self.repo.store(rules, document_id)
+
+        print("Rules stored:", len(rules))
+
+
+        # --------------------------------------------
+        # Generate detectors
+        # --------------------------------------------
+
+        print("Generating regex detectors...")
+
+        detector_agent = DetectorGenerationAgent()
+
+        detectors = detector_agent.generate_detectors(rules)
+
+        print("Generated detectors:", detectors)
+
+
+        # --------------------------------------------
+        # Store detectors
+        # --------------------------------------------
+
+        drepo = DetectorRepository()
+
+        if detectors:
+
+            drepo.store_detectors(document_id, detectors)
+
+            print("Detectors stored:", len(detectors))
+
+        else:
+
+            print("No detectors generated!")
+
+
+        drepo.close()
 
         self.repo.close()
 
         return rules
 
+
+# ----------------------------------------------------------
+# MAIN ENTRY FUNCTION
+# ----------------------------------------------------------
 
 def generate_rules_from_pdf(pdf_path, document_id):
 

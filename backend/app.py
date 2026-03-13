@@ -17,7 +17,6 @@ from rule_check import analyze_single_file
 
 load_dotenv()
 
-
 # ==========================================================
 # FASTAPI INIT
 # ==========================================================
@@ -32,7 +31,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
 # ==========================================================
 # DATABASE CONNECTION
 # ==========================================================
@@ -46,7 +44,6 @@ def get_connection():
         user=os.getenv("DB_USER"),
         password=os.getenv("DB_PASSWORD")
     )
-
 
 # ==========================================================
 # LLM INTENT CLASSIFIER
@@ -64,25 +61,19 @@ class IntentClassifier:
 
         self.deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT")
 
-
     def classify(self, prompt: str):
 
         system_prompt = """
-        You are an intent classification system.
+You are an intent classification system.
 
-        Classify the user request into ONE of these intents:
+Classify the user request into ONE of these intents:
 
-        generate_rules
-        check_compliance
-        unknown
+generate_rules
+check_compliance
+unknown
 
-        Rules:
-        - generate_rules → user wants governance rules from a contract
-        - check_compliance → user wants to scan Python code for rule violations
-        - unknown → anything else
-
-        Return ONLY the intent label.
-        """
+Return only the label.
+"""
 
         response = self.client.chat.completions.create(
             model=self.deployment,
@@ -96,6 +87,8 @@ class IntentClassifier:
         return response.choices[0].message.content.strip().lower()
 
 
+classifier = IntentClassifier()
+
 # ==========================================================
 # FILE UPLOAD
 # ==========================================================
@@ -108,7 +101,7 @@ async def upload_file(file: UploadFile = File(...)):
     if not (filename.endswith(".pdf") or filename.endswith(".py")):
         raise HTTPException(
             status_code=400,
-            detail="Only PDF and .py files are supported"
+            detail="Only PDF and .py files supported"
         )
 
     file_bytes = await file.read()
@@ -117,7 +110,7 @@ async def upload_file(file: UploadFile = File(...)):
     cursor = conn.cursor()
 
     cursor.execute(
-        "SELECT id FROM documents WHERE filename = %s",
+        "SELECT id FROM documents WHERE filename=%s",
         (filename,)
     )
 
@@ -127,29 +120,29 @@ async def upload_file(file: UploadFile = File(...)):
         conn.close()
         raise HTTPException(
             status_code=400,
-            detail="A file with this name already exists"
+            detail="File already exists"
         )
-    else:
-        cursor.execute(
+
+    cursor.execute(
         """
-        INSERT INTO documents (filename, file_data)
-        VALUES (%s, %s)
-        RETURNING id;
+        INSERT INTO documents (filename,file_data)
+        VALUES (%s,%s)
+        RETURNING id
         """,
         (filename, psycopg2.Binary(file_bytes))
-        )
-        document_id = cursor.fetchone()[0]
-        conn.commit()
-        conn.close()
+    )
+
+    document_id = cursor.fetchone()[0]
+
+    conn.commit()
+    conn.close()
 
     file_type = "pdf" if filename.endswith(".pdf") else "python"
 
     return {
         "type": file_type,
-        "message": "File uploaded successfully",
         "document_id": document_id
     }
-
 
 # ==========================================================
 # LIST DOCUMENTS
@@ -172,52 +165,10 @@ def list_documents():
 
     conn.close()
 
-    documents = []
-
-    for r in rows:
-
-        documents.append({
-            "id": r[0],
-            "filename": r[1],
-            "uploaded_at": r[2]
-        })
-
-    return documents
-
-
-# ==========================================================
-# DOWNLOAD DOCUMENT
-# ==========================================================
-
-@app.get("/document/{doc_id}")
-def get_document(doc_id: int):
-
-    conn = get_connection()
-
-    with conn.cursor() as cursor:
-
-        cursor.execute(
-            "SELECT filename, file_data FROM documents WHERE id=%s",
-            (doc_id,)
-        )
-
-        row = cursor.fetchone()
-
-    conn.close()
-
-    if not row:
-        raise HTTPException(status_code=404, detail="Document not found")
-
-    filename, file_data = row
-
-    return StreamingResponse(
-        io.BytesIO(file_data),
-        media_type="application/octet-stream",
-        headers={
-            "Content-Disposition": f"attachment; filename={filename}"
-        }
-    )
-
+    return [
+        {"id": r[0], "filename": r[1], "uploaded_at": r[2]}
+        for r in rows
+    ]
 
 # ==========================================================
 # RULE GENERATION
@@ -232,7 +183,7 @@ def generate_rules(doc_id: int):
 
         with conn.cursor() as cursor:
             cursor.execute(
-                "SELECT filename, file_data FROM documents WHERE id=%s",
+                "SELECT filename,file_data FROM documents WHERE id=%s",
                 (doc_id,)
             )
             row = cursor.fetchone()
@@ -246,21 +197,21 @@ def generate_rules(doc_id: int):
         filename, file_data = row
 
         if not filename.endswith(".pdf"):
-            yield "Rule generation only works for PDF files\n"
+            yield "Rule generation requires a PDF\n"
             return
 
-        yield "Parsing PDF...\n"
+        yield "Parsing contract...\n"
 
         with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp_pdf:
 
             temp_pdf.write(file_data)
-            temp_pdf_path = temp_pdf.name
+            pdf_path = temp_pdf.name
 
-        yield "Generating governance rules...\n"
+        yield "Generating governance rules and detectors...\n"
 
-        rules = generate_rules_from_pdf(temp_pdf_path, doc_id)
+        rules = generate_rules_from_pdf(pdf_path, doc_id)
 
-        os.remove(temp_pdf_path)
+        os.remove(pdf_path)
 
         yield json.dumps({
             "type": "rules",
@@ -268,7 +219,6 @@ def generate_rules(doc_id: int):
         }) + "\n"
 
     return StreamingResponse(stream(), media_type="text/plain")
-
 
 # ==========================================================
 # COMPLIANCE CHECK
@@ -285,7 +235,7 @@ async def check_compliance(request: Request):
     if not contract_id or not python_id:
         raise HTTPException(
             status_code=400,
-            detail="Both contract_id and python_id are required"
+            detail="contract_id and python_id required"
         )
 
     def stream():
@@ -295,7 +245,7 @@ async def check_compliance(request: Request):
         with conn.cursor() as cursor:
 
             cursor.execute(
-                "SELECT filename, file_data FROM documents WHERE id=%s",
+                "SELECT filename,file_data FROM documents WHERE id=%s",
                 (python_id,)
             )
 
@@ -310,7 +260,7 @@ async def check_compliance(request: Request):
         filename, file_data = row
 
         if not filename.endswith(".py"):
-            yield "Compliance check only works for Python files\n"
+            yield "Only Python files supported\n"
             return
 
         yield "Preparing Python file...\n"
@@ -333,15 +283,12 @@ async def check_compliance(request: Request):
 
     return StreamingResponse(stream(), media_type="text/plain")
 
-
 # ==========================================================
-# PROMPT ROUTER (LLM + CONTRACT + PYTHON)
+# PROMPT ROUTER
 # ==========================================================
 
 @app.post("/process_prompt")
 async def process_prompt(request: Request):
-
-    classifier = IntentClassifier()
 
     body = await request.json()
 
@@ -355,80 +302,26 @@ async def process_prompt(request: Request):
 
         if not contract_id:
             return StreamingResponse(
-                iter(["Please select a contract PDF file\n"]),
+                iter(["Please select a contract\n"]),
                 media_type="text/plain"
             )
 
         return generate_rules(contract_id)
 
-
     if intent == "check_compliance":
 
         if not contract_id or not python_id:
             return StreamingResponse(
-                iter(["Please select both a contract and Python file\n"]),
+                iter(["Select contract and python file\n"]),
                 media_type="text/plain"
             )
 
-        def stream():
-
-            conn = get_connection()
-
-            with conn.cursor() as cursor:
-
-                cursor.execute(
-                    "SELECT file_data FROM documents WHERE id=%s",
-                    (contract_id,)
-                )
-                contract_data = cursor.fetchone()[0]
-
-                cursor.execute(
-                    "SELECT file_data FROM documents WHERE id=%s",
-                    (python_id,)
-                )
-                python_data = cursor.fetchone()[0]
-
-            conn.close()
-
-            yield "Parsing contract...\n"
-
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp_pdf:
-
-                temp_pdf.write(contract_data)
-                contract_path = temp_pdf.name
-
-            yield "Generating governance rules...\n"
-
-            rules = generate_rules_from_pdf(contract_path, contract_id)
-
-            os.remove(contract_path)
-
-            yield "Preparing Python file...\n"
-
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".py") as temp_py:
-
-                temp_py.write(python_data)
-                python_path = temp_py.name
-
-            try:
-
-                yield "Checking compliance using contract rules...\n"
-
-                for message in analyze_single_file(python_path, contract_id):
-                    yield message
-
-            finally:
-
-                os.remove(python_path)
-
-        return StreamingResponse(stream(), media_type="text/plain")
-
+        return await check_compliance(request)
 
     return StreamingResponse(
-        iter(["Invalid request\n"]),
+        iter(["Unknown request\n"]),
         media_type="text/plain"
     )
-
 
 # ==========================================================
 # SERVE FRONTEND
