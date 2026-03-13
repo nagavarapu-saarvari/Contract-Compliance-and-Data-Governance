@@ -9,9 +9,9 @@ from langchain_docling import DoclingLoader
 load_dotenv()
 
 
-# ==========================================================
+# ----------------------------------------------------------
 # LLM SERVICE
-# ==========================================================
+# ----------------------------------------------------------
 
 class AzureLLMService:
 
@@ -40,9 +40,9 @@ class AzureLLMService:
         return json.loads(response.choices[0].message.content)
 
 
-# ==========================================================
+# ----------------------------------------------------------
 # PDF PARSER
-# ==========================================================
+# ----------------------------------------------------------
 
 class ParsePDFTool:
 
@@ -54,9 +54,9 @@ class ParsePDFTool:
         return "".join(doc.page_content for doc in documents)
 
 
-# ==========================================================
+# ----------------------------------------------------------
 # POLICY COMPILER
-# ==========================================================
+# ----------------------------------------------------------
 
 class PolicyCompilationTool:
 
@@ -66,32 +66,27 @@ class PolicyCompilationTool:
     def execute(self, contract_text: str) -> List[Dict]:
 
         system_prompt = """
-You are a senior enterprise governance expert.
+You are a governance expert.
 
-Convert enforceable obligations into structured rules.
+Convert contract obligations into enforceable governance rules.
 
-Return STRICT JSON only.
+Return JSON only.
 """
 
         user_prompt = f"""
-Return the rules in this format:
+Return rules in this format:
 
 {{
-"rules":[
-{{
-"rule_id":"",
-"title":"",
-"description":"",
-"action_category":"",
-"conditions":{{
-"applies_to":"",
-"data_type":"",
-"context":"",
-"exceptions":""
-}},
-"effect":"deny | allow"
-}}
-]
+ "rules":[
+  {{
+   "rule_id":"",
+   "title":"",
+   "description":"",
+   "action_category":"",
+   "conditions":{{}},
+   "effect":"deny|allow"
+  }}
+ ]
 }}
 
 Contract:
@@ -100,18 +95,12 @@ Contract:
 
         result = self.llm.generate_json(system_prompt, user_prompt)
 
-        if isinstance(result, dict) and "rules" in result:
-            return result["rules"]
-
-        if isinstance(result, list):
-            return result
-
-        raise ValueError("Invalid JSON structure from LLM")
+        return result.get("rules", [])
 
 
-# ==========================================================
+# ----------------------------------------------------------
 # DATABASE REPOSITORY
-# ==========================================================
+# ----------------------------------------------------------
 
 class RuleRepository:
 
@@ -125,21 +114,18 @@ class RuleRepository:
             password=os.getenv("DB_PASSWORD")
         )
 
-    def get_rules_by_document(self, document_id: int) -> List[Dict]:
+    def get_rules_by_document(self, document_id: int):
 
         with self.conn.cursor() as cursor:
 
-            cursor.execute("""
-            SELECT rule_json
-            FROM rules
-            WHERE document_id = %s
-            ORDER BY id
-            """, (document_id,))
+            cursor.execute(
+                "SELECT rule_json FROM rules WHERE document_id=%s",
+                (document_id,)
+            )
 
             rows = cursor.fetchall()
 
-        return [row[0] for row in rows]
-
+        return [r[0] for r in rows]
 
     def store(self, rules: List[Dict], document_id: int):
 
@@ -147,62 +133,58 @@ class RuleRepository:
 
             for rule in rules:
 
-                cursor.execute("""
-                INSERT INTO rules (document_id, rule_id, rule_json)
-                VALUES (%s, %s, %s)
-                ON CONFLICT (document_id, rule_id) DO NOTHING
-                """,
-                (
-                    document_id,
-                    rule.get("rule_id"),
-                    json.dumps(rule)
-                ))
+                cursor.execute(
+                    """
+                    INSERT INTO rules (document_id, rule_id, rule_json)
+                    VALUES (%s,%s,%s)
+                    ON CONFLICT (document_id,rule_id) DO NOTHING
+                    """,
+                    (
+                        document_id,
+                        rule.get("rule_id"),
+                        json.dumps(rule)
+                    )
+                )
 
         self.conn.commit()
-
 
     def close(self):
         self.conn.close()
 
 
-# ==========================================================
-# ORCHESTRATOR
-# ==========================================================
+# ----------------------------------------------------------
+# RULE GENERATION AGENT
+# ----------------------------------------------------------
 
 class RuleGenerationAgent:
 
     def __init__(self):
 
         self.llm = AzureLLMService()
-        self.parse_tool = ParsePDFTool()
-        self.policy_tool = PolicyCompilationTool(self.llm)
-        self.repository = RuleRepository()
+        self.parser = ParsePDFTool()
+        self.compiler = PolicyCompilationTool(self.llm)
+        self.repo = RuleRepository()
 
+    def process_contract(self, pdf_path, document_id):
 
-    def process_contract(self, pdf_path: str, document_id: int):
+        existing = self.repo.get_rules_by_document(document_id)
 
-        existing_rules = self.repository.get_rules_by_document(document_id)
+        if existing:
+            self.repo.close()
+            return existing
 
-        if existing_rules:
-            self.repository.close()
-            return existing_rules
+        text = self.parser.execute(pdf_path)
 
-        contract_text = self.parse_tool.execute(pdf_path)
+        rules = self.compiler.execute(text)
 
-        rules = self.policy_tool.execute(contract_text)
+        self.repo.store(rules, document_id)
 
-        self.repository.store(rules, document_id)
-
-        self.repository.close()
+        self.repo.close()
 
         return rules
 
 
-# ==========================================================
-# PUBLIC FUNCTION
-# ==========================================================
-
-def generate_rules_from_pdf(pdf_path: str, document_id: int):
+def generate_rules_from_pdf(pdf_path, document_id):
 
     agent = RuleGenerationAgent()
 

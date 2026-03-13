@@ -2,151 +2,43 @@ import ast
 import json
 import os
 import re
-import psycopg2
 from dotenv import load_dotenv
 from openai import AzureOpenAI
 
+from detector_repository import DetectorRepository
+from rule_generation import RuleRepository
+
 load_dotenv()
 
-# ==========================================================
-# RULE REPOSITORY
-# ==========================================================
 
-class RuleRepository:
+# ----------------------------------------------------------
+# AST SCANNER
+# ----------------------------------------------------------
 
-    def __init__(self):
+class ComplianceScanner(ast.NodeVisitor):
 
-        self.conn = psycopg2.connect(
-            host=os.getenv("DB_HOST", "localhost"),
-            port=os.getenv("DB_PORT", "5432"),
-            dbname=os.getenv("DB_NAME"),
-            user=os.getenv("DB_USER"),
-            password=os.getenv("DB_PASSWORD")
+    def __init__(self, source):
+
+        self.lines = source.split("\n")
+        self.blocks = []
+
+    def visit_FunctionDef(self, node):
+
+        code = "\n".join(
+            self.lines[node.lineno-1:node.end_lineno]
         )
 
-    def fetch_rules_by_document(self, document_id):
+        self.blocks.append({
+            "name": node.name,
+            "code": code
+        })
 
-        with self.conn.cursor() as cursor:
-
-            cursor.execute(
-                "SELECT rule_json FROM rules WHERE document_id=%s",
-                (document_id,)
-            )
-
-            rows = cursor.fetchall()
-
-        return [row[0] for row in rows]
-
-    def close(self):
-        self.conn.close()
+        self.generic_visit(node)
 
 
-# ==========================================================
-# DATABASE METADATA EXTRACTION
-# ==========================================================
-
-def extract_db_metadata():
-
-    conn = psycopg2.connect(
-        host=os.getenv("DB_HOST"),
-        port=os.getenv("DB_PORT"),
-        dbname=os.getenv("DATA_DB"),
-        user=os.getenv("DB_USER"),
-        password=os.getenv("DB_PASSWORD")
-    )
-
-    cursor = conn.cursor()
-
-    cursor.execute("""
-        SELECT table_name, column_name
-        FROM information_schema.columns
-        WHERE table_schema='public'
-    """)
-
-    rows = cursor.fetchall()
-
-    cursor.close()
-    conn.close()
-
-    metadata = {}
-
-    for table, column in rows:
-
-        if table not in metadata:
-            metadata[table] = []
-
-        metadata[table].append(column)
-
-    return metadata
-
-
-# ==========================================================
-# REGEX RULES
-# ==========================================================
-
-SQL_PATTERNS = [
-    r"\bSELECT\b",
-    r"\bINSERT\b",
-    r"\bUPDATE\b",
-    r"\bDELETE\b",
-    r"\bJOIN\b"
-]
-
-EXTERNAL_ROUTE_PATTERNS = [
-    r"requests\.(get|post|put|delete)",
-    r"http[s]?://",
-    r"fetch\(",
-    r"axios\."
-]
-
-
-# ==========================================================
-# REGEX DETECTOR
-# ==========================================================
-
-def detect_risky_patterns(code_block, metadata):
-
-    findings = []
-
-    # Detect SQL operations
-    for pattern in SQL_PATTERNS:
-
-        if re.search(pattern, code_block, re.IGNORECASE):
-
-            findings.append({
-                "type": "sql_operation",
-                "pattern": pattern
-            })
-
-    # Detect external API calls
-    for pattern in EXTERNAL_ROUTE_PATTERNS:
-
-        if re.search(pattern, code_block):
-
-            findings.append({
-                "type": "external_api",
-                "pattern": pattern
-            })
-
-    # Detect usage of sensitive columns
-    for table, columns in metadata.items():
-
-        for column in columns:
-
-            if re.search(rf"\b{column}\b", code_block):
-
-                findings.append({
-                    "type": "sensitive_field",
-                    "table": table,
-                    "column": column
-                })
-
-    return findings
-
-
-# ==========================================================
+# ----------------------------------------------------------
 # LLM SERVICE
-# ==========================================================
+# ----------------------------------------------------------
 
 class AzureLLMService:
 
@@ -161,194 +53,200 @@ class AzureLLMService:
         self.deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT")
 
 
-    def evaluate_block(self, code_block, rules):
+# ----------------------------------------------------------
+# DETECTOR MATCH
+# ----------------------------------------------------------
 
-        system_prompt = """
-You are an enterprise contract compliance engine.
+def detect_patterns(code, detectors):
 
-You will receive:
-1. Python code
-2. Governance rules
+    findings = []
 
-Detect rule violations.
+    for d in detectors:
 
-Return JSON:
+        for pattern in d.get("regex", []):
 
-{
-"violations":[
-{
-"rule_id":"",
-"title":"",
-"reason":""
-}
-]
-}
-"""
+            try:
 
-        user_prompt = f"""
-Rules:
-{json.dumps(rules)}
+                if re.search(pattern, code, re.IGNORECASE):
 
-Code:
-{code_block}
-"""
+                    findings.append({
+                        "rule_id": d.get("rule_id"),
+                        "category": d.get("category"),
+                        "pattern": pattern
+                    })
 
-        response = self.client.chat.completions.create(
-            model=self.deployment,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
-            ],
-            response_format={"type": "json_object"},
-            temperature=0
-        )
+            except re.error:
+                continue
 
-        return json.loads(response.choices[0].message.content)
+    return findings
 
 
-# ==========================================================
-# AST COMPLIANCE SCANNER
-# ==========================================================
+# ----------------------------------------------------------
+# CONTEXT EXTRACTION
+# ----------------------------------------------------------
 
-class ComplianceScanner(ast.NodeVisitor):
+def extract_context(code, pattern):
 
-    def __init__(self, source_code):
+    lines = code.split("\n")
 
-        self.source_code = source_code
-        self.lines = source_code.split("\n")
-        self.current_function = None
-        self.blocks_for_review = []
+    for i, line in enumerate(lines):
 
+        if re.search(pattern, line, re.IGNORECASE):
 
-    def visit_FunctionDef(self, node):
+            start = max(0, i-2)
+            end = min(len(lines), i+3)
 
-        self.current_function = node
-        self.generic_visit(node)
-        self.current_function = None
+            return "\n".join(lines[start:end])
 
-
-    def visit_Call(self, node):
-
-        if self.current_function:
-
-            code = "\n".join(
-                self.lines[
-                    self.current_function.lineno - 1:
-                    self.current_function.end_lineno
-                ]
-            )
-
-            if not any(b["code"] == code for b in self.blocks_for_review):
-
-                self.blocks_for_review.append({
-                    "scope": "function",
-                    "name": self.current_function.name,
-                    "code": code
-                })
-
-        self.generic_visit(node)
+    return code[:200]
 
 
-# ==========================================================
-# MAIN ANALYSIS PIPELINE
-# ==========================================================
+# ----------------------------------------------------------
+# MAIN ANALYSIS
+# ----------------------------------------------------------
 
-def analyze_single_file(file_path: str, contract_id: int):
+def analyze_single_file(path, document_id):
 
     yield "Scanning Python file...\n"
 
-    try:
+    with open(path) as f:
+        code = f.read()
 
-        with open(file_path, "r", encoding="utf-8") as f:
-            code = f.read()
-
-        tree = ast.parse(code)
-
-    except Exception as e:
-
-        yield f"Failed to parse Python file: {str(e)}\n"
-
-        yield json.dumps({
-            "type": "violations",
-            "violations": [],
-            "safe": False
-        }) + "\n"
-
-        return
-
+    tree = ast.parse(code)
 
     scanner = ComplianceScanner(code)
     scanner.visit(tree)
 
-    if not scanner.blocks_for_review:
+    repo = RuleRepository()
+    rules = repo.get_rules_by_document(document_id)
+    repo.close()
+
+    drepo = DetectorRepository()
+    raw_detectors = drepo.get_detectors(document_id)
+
+    detectors = []
+
+    for row in raw_detectors:
+        if isinstance(row, list):
+            detectors.extend(row)
+        else:
+            detectors.append(row)
+
+    drepo.close()
+
+    suspicious = []
+
+    for block in scanner.blocks:
+
+        findings = detect_patterns(block["code"], detectors)
+
+        if findings:
+
+            
+
+            suspicious.append({
+                "function": block["name"],
+    "code": block["code"],
+    "findings": findings
+            })
+
+    if not suspicious:
 
         yield json.dumps({
-            "type": "violations",
+             "type": "violations",
             "violations": [],
             "safe": True
         }) + "\n"
 
         return
 
+    suspicious = suspicious[:5]
 
-    # Extract DB metadata
-    metadata = extract_db_metadata()
+    relevant_rules = rules
 
-    repo = RuleRepository()
-    rules = repo.fetch_rules_by_document(contract_id)
-    repo.close()
+    blocks_text = ""
+
+    for b in suspicious:
+
+        blocks_text += f"""
+FUNCTION: {b['function']}
+
+CODE:
+{b['code']}
+
+DETECTED PATTERNS:
+{json.dumps(b['findings'], indent=2)}
+"""
+
+    system_prompt = """
+You are an enterprise governance compliance engine.
+
+You will receive:
+1. Governance rules
+2. Python code snippets
+3. Detected suspicious patterns
+
+For EACH function independently:
+
+1. Check if the code violates any governance rule
+2. If it does, return the rule_id and title from the provided rules
+3. Multiple functions may violate multiple rules
+
+IMPORTANT:
+- Only use rule_ids from the provided rules
+- Do not invent rules
+
+Return JSON:
+
+{
+ "violations":[
+  {
+   "function":"",
+   "rule_id":"",
+   "title":"",
+   "reason":""
+  }
+ ]
+}
+"""
+
+    user_prompt = f"""
+Rules:
+{json.dumps(relevant_rules)}
+
+Code snippets:
+{blocks_text}
+"""
+
+    yield "Evaluating suspicious blocks with LLM...\n"
+    print("LLM request starting...")
 
     llm = AzureLLMService()
 
-    violations_list = []
+    response = llm.client.chat.completions.create(
+        model=llm.deployment,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt}
+        ],
+        response_format={"type": "json_object"},
+        temperature=0,
+        timeout=20
+    )
+    print("LLM response received")
 
-    for block in scanner.blocks_for_review:
+    content = response.choices[0].message.content
 
-        code_block = block["code"]
+    print("RAW LLM RESPONSE:")
+    print(content)
 
-        regex_findings = detect_risky_patterns(code_block, metadata)
+    result = json.loads(content)
 
-        if not regex_findings:
-            continue
-
-        try:
-
-            result = llm.evaluate_block(
-                f"""
-Code Block:
-{code_block}
-
-Detected Patterns:
-{json.dumps(regex_findings, indent=2)}
-""",
-                rules
-            )
-
-            violations = result.get("violations", [])
-
-            for v in violations:
-
-                violations_list.append({
-                    "rule_id": v["rule_id"],
-                    "title": v["title"],
-                    "reason": v["reason"],
-                    "scope": block["scope"],
-                    "function": block["name"]
-                })
-
-        except Exception as e:
-
-            violations_list.append({
-                "rule_id": "SYSTEM",
-                "title": "LLM evaluation error",
-                "reason": str(e),
-                "scope": block["scope"],
-                "function": block["name"]
-            })
-
+    violations = result.get("violations", [])
 
     yield json.dumps({
-        "type": "violations",
-        "violations": violations_list,
-        "safe": len(violations_list) == 0
+         "type": "violations",
+        "violations": violations,
+        "safe": len(violations) == 0
     }) + "\n"
+    return

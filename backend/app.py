@@ -320,11 +320,6 @@ async def check_compliance(request: Request):
             temp_file.write(file_data)
             temp_path = temp_file.name
 
-        metadata = {
-            "patients": ["patient_id", "ssn", "dob"],
-            "healthcare_providers": ["provider_id", "npi"]
-        }
-
         try:
 
             yield "Running compliance scanner...\n"
